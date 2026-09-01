@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ztreamer docs</title>
+<meta name="theme-color" content="#0b0b0a">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23f2c531'/%3E%3Cpath d='M7 8h18v4L13 24h12v0H7v-4l12-12H7z' fill='%230b0b0a'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,300..900&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="site.css">
+</head>
+<body>
+<header class="wrap">
+  <a href="./">ztreamer</a>
+  <nav><a href="docs.html">docs</a><a href="https://github.com/distractedm1nd/ztreamer">source</a></nav>
+</header>
+
+<main class="wrap doc">
+<h1 class="r">docs</h1>
+
+<h2>install</h2>
+<p>Needs <code>protoc</code> on the path.</p>
+<pre><span class="p">$</span> cargo install --git https://github.com/distractedm1nd/ztreamer ztreamerd</pre>
+
+<h2>run</h2>
+<p>One process. Zakura boots inside it, syncs to the tip, then the index builds and the servers open.</p>
+<pre><span class="p">$</span> ztreamerd --zakura-config zakura.toml --index-map-size 68719476736</pre>
+<p>The map size is a virtual reservation, not disk. Mainnet needs more than the 16 GiB default.</p>
+
+<h2>flags</h2>
+<table>
+<tr><td>--zakura-config FILE</td><td>Zakura TOML. Zakura defaults and <code>ZAKURA_*</code> apply when omitted.</td></tr>
+<tr><td>--index-dir DIR</td><td>LMDB index. <s>ztreamer-index</s></td></tr>
+<tr><td>--index-map-size BYTES</td><td>LMDB map ceiling. <s>17179869184</s></td></tr>
+<tr><td>--grpc-listen ADDR</td><td>CompactTxStreamer. <s>127.0.0.1:9067</s></td></tr>
+<tr><td>--metrics-listen ADDR</td><td>Prometheus. <s>127.0.0.1:9999</s></td></tr>
+<tr><td>--fetch-workers N</td><td>Historical fetch workers. <s>min(cores, 8)</s></td></tr>
+<tr><td>--source-segment-blocks N</td><td>Consecutive blocks per fetch worker. <s>256</s></td></tr>
+<tr><td>--max-pending-bytes N</td><td>Bytes awaiting ordered ingestion. <s>256 MiB</s></td></tr>
+<tr><td>--max-batch-bytes N</td><td>Index write batch. <s>16 MiB</s></td></tr>
+<tr><td>--index-only</td><td>Build the index and exit.</td></tr>
+</table>
+<p>Logging is <code>RUST_LOG</code>, default <code>info</code>. Ctrl-C shuts down in order: index writer, then Zakura.</p>
+
+<h2>protocol</h2>
+<p>Every <code>CompactTxStreamer</code> method, with three exceptions.</p>
+<table>
+<tr><td>GetMempoolTx</td><td>Unimplemented.</td></tr>
+<tr><td>GetBlock</td><td>No transparent data. No wallet reads it.</td></tr>
+<tr><td>GetBlockRange</td><td>Rejects transparent filters. Range scans of transparent data cost more bandwidth than they are worth.</td></tr>
+</table>
+<p>Zaino direct-mode JSON-RPC parity, 24 of 27. Missing: <code>getblockdeltas</code>, <code>getspentinfo</code>, <code>gettxoutsetinfo</code>.</p>
+
+<h2>p2p</h2>
+<p>The same service over Zakura's peer protocol, so a light wallet can sync from any Zakura peer running ztreamer. No server, no TLS, no DNS.</p>
+<table>
+<tr><td>service</td><td>zakura.ztreamer.v1</td></tr>
+<tr><td>capability bit</td><td>1 &lt;&lt; 17</td></tr>
+<tr><td>stream</td><td>kind 65, version 1, ordered</td></tr>
+<tr><td>message limit</td><td>4 MiB, framed with a MORE flag</td></tr>
+</table>
+<p>Messages are the gRPC request and response types, protobuf-encoded, one per frame sequence.</p>
+
+<h2>reorgs</h2>
+<p>The head follower reconciles the index against Zakura's canonical chain on every advance. A reorg deeper than Zakura's non-finalized window triggers a full recovery pass. Both paths are under test.</p>
+</main>
+
+<footer class="wrap">
+  <a href="https://github.com/zakura-core/zakura">built on zakura</a>
+</footer>
+</body>
+</html>
