@@ -31,7 +31,7 @@
 </section>
 
 <section class="wrap stats r" style="animation-delay:.45s">
-  <div><b><span id="n">0</span></b><span>blocks indexed</span></div>
+  <div><b><span id="n">0</span><small>s</small></b><span>genesis to serving</span></div>
   <div><b>37,848<small>blocks/s</small></b><span>index rate</span></div>
   <div><b>16<small>GiB</small></b><span>on disk</span></div>
 </section>
@@ -54,7 +54,7 @@
 </footer>
 
 <script>
-const n=document.getElementById('n'),t0=performance.now(),N=3467595;
+const n=document.getElementById('n'),t0=performance.now(),N=92;
 (function f(){const p=Math.min(1,(performance.now()-t0-500)/1600);const e=1-Math.pow(1-Math.max(0,p),3);
 n.textContent=Math.round(e*N).toLocaleString('en-US');if(p<1)requestAnimationFrame(f)})();
 requestAnimationFrame(()=>document.getElementById('bars').classList.add('on'));
