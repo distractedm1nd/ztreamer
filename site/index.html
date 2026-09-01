@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ztreamer</title>
-<meta name="description" content="Zcash indexer. Whole mainnet in 183 seconds.">
+<meta name="description" content="Zcash indexer. Whole mainnet in 92 seconds.">
 <meta property="og:title" content="ztreamer">
-<meta property="og:description" content="Zcash indexer. Whole mainnet in 183 seconds.">
+<meta property="og:description" content="Zcash indexer. Whole mainnet in 92 seconds.">
 <meta name="theme-color" content="#0b0b0a">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23f2c531'/%3E%3Cpath d='M7 8h18v4L13 24h12v0H7v-4l12-12H7z' fill='%230b0b0a'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -50,7 +50,9 @@ h1 em{font-style:normal;color:var(--gold)}
 .bars p{font:.75rem/1 var(--mono);color:var(--dim);letter-spacing:.04em;margin-bottom:1.5rem}
 .bar{display:grid;grid-template-columns:8ch 1fr;padding-right:10ch;align-items:center;gap:1.25rem;font:500 .85rem/1 var(--mono)}
 .bar+.bar{margin-top:1rem}
-.bar i{display:block;font-style:normal;height:2.75rem;background:var(--ink);transform-origin:left;transform:scaleX(0);transition:transform 1.4s cubic-bezier(.2,.9,.2,1) .6s;position:relative}
+.bars .g{margin-top:3rem}
+.bars .n{margin:2.5rem 0 0;color:var(--dim)}
+.bar i{display:block;font-style:normal;height:2.75rem;min-width:3px;background:var(--ink);transform-origin:left;transform:scaleX(0);transition:transform 1.4s cubic-bezier(.2,.9,.2,1) .6s;position:relative}
 .bar i::after{content:attr(data-v);position:absolute;left:calc(100% + .8rem);top:50%;translate:0 -50%;white-space:nowrap;opacity:0;transition:opacity .4s 1.8s}
 .bar.k i{background:var(--gold)}
 .on .bar i{transform:scaleX(1)}
@@ -92,7 +94,7 @@ footer a:hover{color:var(--ink)}
 <main>
 <section class="wrap hero">
   <h1 class="r">z<em>treamer</em></h1>
-  <p class="tag r" style="animation-delay:.15s">Zcash indexer. <b>Whole mainnet in 183&nbsp;seconds.</b></p>
+  <p class="tag r" style="animation-delay:.15s">Zcash indexer. <b>Whole mainnet in 92&nbsp;seconds.</b></p>
   <button class="cmd r" style="animation-delay:.3s" id="cmd" type="button" aria-label="copy install command">
     <span><span class="p">$</span> cargo install --git https://github.com/distractedm1nd/ztreamer ztreamerd</span>
     <span class="c">copy</span>
@@ -101,14 +103,20 @@ footer a:hover{color:var(--ink)}
 
 <section class="wrap stats r" style="animation-delay:.45s">
   <div><b><span id="n">0</span></b><span>blocks indexed</span></div>
-  <div><b>2.18<small>GiB/s</small></b><span>source throughput</span></div>
-  <div><b>1.77<small>cores</small></b><span>cpu, average</span></div>
+  <div><b>37,848<small>blocks/s</small></b><span>index rate</span></div>
+  <div><b>16<small>GiB</small></b><span>on disk</span></div>
 </section>
 
 <section class="wrap bars r" style="animation-delay:.6s" id="bars">
-  <p>bytes</p>
-  <div class="bar"><span>chain</span><i data-v="254.5 GiB" style="width:100%"></i></div>
-  <div class="bar k"><span>index</span><i data-v="21 GiB" style="width:8.25%"></i></div>
+  <p>genesis to serving</p>
+  <div class="bar k"><span>ztreamer</span><i data-v="92 s" style="width:.51%"></i></div>
+  <div class="bar"><span>zaino</span><i data-v="3.5 h" style="width:70.2%"></i></div>
+  <div class="bar"><span>zinder</span><i data-v="5.0 h" style="width:100%"></i></div>
+  <p class="g">on disk</p>
+  <div class="bar k"><span>ztreamer</span><i data-v="16 GiB" style="width:4.6%"></i></div>
+  <div class="bar"><span>zaino</span><i data-v="78 GiB" style="width:22.2%"></i></div>
+  <div class="bar"><span>zinder</span><i data-v="351 GiB" style="width:100%"></i></div>
+  <p class="n">mainnet from genesis, same machine, same harness, warm cache. m3 ultra, 512 GiB.</p>
 </section>
 
 <section class="wrap what r" style="animation-delay:.7s">
@@ -118,7 +126,7 @@ footer a:hover{color:var(--ink)}
       <li>Embedded Zakura node<s>one process</s></li>
       <li>CompactTxStreamer over gRPC<s>:9067</s></li>
       <li>CompactTxStreamer over Zakura p2p<s class="k">no server needed</s></li>
-      <li>LMDB compact index<s>21 GiB</s></li>
+      <li>LMDB compact index<s>16 GiB</s></li>
       <li>Reorg reconciliation, any depth</li>
     </ul>
   </div>
@@ -137,11 +145,11 @@ footer a:hover{color:var(--ink)}
 
 <footer class="wrap">
   <a href="https://github.com/distractedm1nd/ztreamer">source</a>
-  <span>3,464,754 blocks · 183 s wall · 5 GB peak</span>
+  <span>ztreamer 9fc0c0c · zaino afd609e · zinder 05c0263</span>
 </footer>
 
 <script>
-const n=document.getElementById('n'),t0=performance.now(),N=3464754;
+const n=document.getElementById('n'),t0=performance.now(),N=3467595;
 (function f(){const p=Math.min(1,(performance.now()-t0-500)/1600);const e=1-Math.pow(1-Math.max(0,p),3);
 n.textContent=Math.round(e*N).toLocaleString('en-US');if(p<1)requestAnimationFrame(f)})();
 requestAnimationFrame(()=>document.getElementById('bars').classList.add('on'));
