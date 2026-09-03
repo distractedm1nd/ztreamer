@@ -18,6 +18,17 @@ cargo install --git https://github.com/distractedm1nd/ztreamer ztreamerd
 ztreamerd --zakura-config zakura.toml
 ```
 
+The gRPC listener is plaintext by default. To serve it over TLS, provide a PEM certificate chain and matching PEM private key together:
+
+```console
+ztreamerd --zakura-config zakura.toml \
+  --grpc-listen 0.0.0.0:9067 \
+  --tls-cert /etc/letsencrypt/live/ztreamer.example/fullchain.pem \
+  --tls-key /etc/letsencrypt/live/ztreamer.example/privkey.pem
+```
+
+Certificate changes require a restart. The Prometheus listener is not covered by these options and should remain private or be secured by a reverse proxy.
+
 ## Protocol compatibility
 
  All `lightwallet-protocol` methods are implemented except `GetMempoolTx`. We intentionally deviate `lightwallet-protocol` for two other requests:

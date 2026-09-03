@@ -3,7 +3,7 @@
 use std::{
     net::SocketAddr,
     num::{NonZeroU32, NonZeroUsize},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
     time::Instant,
 };
@@ -11,7 +11,7 @@ use std::{
 use anyhow::{Context, Result, anyhow};
 use clap::Parser;
 use tokio::sync::watch;
-use tonic::transport::Server;
+use tonic::transport::{Identity, Server, ServerTlsConfig};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 use zakurad::{components::metrics::MetricsEndpoint, config::ZakuradConfig, node};
@@ -63,6 +63,14 @@ struct Cli {
     #[arg(long, default_value = "127.0.0.1:9999")]
     metrics_listen: SocketAddr,
 
+    /// PEM-encoded TLS certificate chain for the gRPC server.
+    #[arg(long, value_name = "FILE", requires = "tls_key")]
+    tls_cert: Option<PathBuf>,
+
+    /// PEM-encoded TLS private key for the gRPC server.
+    #[arg(long, value_name = "FILE", requires = "tls_cert")]
+    tls_key: Option<PathBuf>,
+
     /// Exit after historical indexing instead of starting servers and the head follower.
     #[arg(long)]
     index_only: bool,
@@ -76,6 +84,9 @@ async fn main() -> Result<()> {
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
+
+    // Read and validate the identity before starting the node or the potentially lengthy index.
+    let mut grpc_server = grpc_server(cli.tls_cert.as_deref(), cli.tls_key.as_deref())?;
 
     let mut config = ZakuradConfig::load(cli.zakura_config).context("load Zakura configuration")?;
     config.metrics.endpoint_addr = Some(cli.metrics_listen);
@@ -210,8 +221,12 @@ async fn main() -> Result<()> {
     let mut grpc = tokio::spawn({
         let receiver = shutdown.subscribe();
         async move {
-            info!(address = %cli.grpc_listen, "serving CompactTxStreamer gRPC");
-            Server::builder()
+            info!(
+                address = %cli.grpc_listen,
+                tls = cli.tls_cert.is_some(),
+                "serving CompactTxStreamer gRPC"
+            );
+            grpc_server
                 .add_service(CompactTxStreamerServer::new(compact))
                 .serve_with_shutdown(cli.grpc_listen, shutdown_requested(receiver))
                 .await
@@ -256,6 +271,26 @@ async fn main() -> Result<()> {
         .map_err(|error| anyhow!("shut down embedded Zakura: {error}"));
     outcome?;
     node_result
+}
+
+fn grpc_server(tls_cert: Option<&Path>, tls_key: Option<&Path>) -> Result<Server> {
+    let server = Server::builder();
+    let (Some(cert_path), Some(key_path)) = (tls_cert, tls_key) else {
+        if tls_cert.is_some() || tls_key.is_some() {
+            return Err(anyhow!(
+                "--tls-cert and --tls-key must be provided together"
+            ));
+        }
+        return Ok(server);
+    };
+
+    let cert = std::fs::read(cert_path)
+        .with_context(|| format!("read TLS certificate {}", cert_path.display()))?;
+    let key = std::fs::read(key_path)
+        .with_context(|| format!("read TLS private key {}", key_path.display()))?;
+    server
+        .tls_config(ServerTlsConfig::new().identity(Identity::from_pem(cert, key)))
+        .context("configure gRPC TLS")
 }
 
 async fn shutdown_requested(mut receiver: watch::Receiver<bool>) {

@@ -35,6 +35,8 @@
 <tr><td>--index-dir DIR</td><td>LMDB index. <s>ztreamer-index</s></td></tr>
 <tr><td>--index-map-size BYTES</td><td>LMDB map ceiling. <s>17179869184</s></td></tr>
 <tr><td>--grpc-listen ADDR</td><td>CompactTxStreamer. <s>127.0.0.1:9067</s></td></tr>
+<tr><td>--tls-cert FILE</td><td>PEM certificate chain for gRPC TLS. Requires <code>--tls-key</code>.</td></tr>
+<tr><td>--tls-key FILE</td><td>PEM private key for gRPC TLS. Requires <code>--tls-cert</code>.</td></tr>
 <tr><td>--metrics-listen ADDR</td><td>Prometheus. <s>127.0.0.1:9999</s></td></tr>
 <tr><td>--fetch-workers N</td><td>Historical fetch workers. <s>min(cores, 8)</s></td></tr>
 <tr><td>--source-segment-blocks N</td><td>Consecutive blocks per fetch worker. <s>256</s></td></tr>
