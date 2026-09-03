@@ -1,6 +1,8 @@
 // Disabled due to warnings in criterion macros
 #![allow(missing_docs)]
 
+use std::time::Duration;
+
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use zakura_chain::{block::Block, serialization::ZcashDeserialize as _};
 use zakura_test::vectors::{
@@ -63,9 +65,20 @@ fn parse_block_rate(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(
+fn criterion_config() -> Criterion {
+    let mut criterion = Criterion::default().noise_threshold(0.05).sample_size(50);
+    if std::env::var_os("CI").is_some() {
+        criterion = criterion
+            .warm_up_time(Duration::from_millis(300))
+            .measurement_time(Duration::from_secs(1))
+            .sample_size(10);
+    }
+    criterion
+}
+
+criterion_group! {
     name = benches;
-    config = Criterion::default().noise_threshold(0.05).sample_size(50);
+    config = criterion_config();
     targets = parse_block_bytes, parse_block_rate
-);
+}
 criterion_main!(benches);
