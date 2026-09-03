@@ -100,7 +100,7 @@ fn get_block_range(c: &mut Criterion) {
     let service = CompactService::new(index, state, "main", read_service);
 
     let mut group = c.benchmark_group("get_block_range");
-    for blocks in [1, 100, 1_000] {
+    for blocks in [100, 200, 600, 1_000, 2_000] {
         group.throughput(Throughput::Elements(u64::from(blocks)));
         for (direction, start, end) in [
             ("ascending", TIP - blocks, TIP - 1),
