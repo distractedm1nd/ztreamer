@@ -201,10 +201,34 @@ impl Index {
         generation: u64,
         start: u32,
         end: u32,
-        mut emit: impl FnMut(CompactBlockRecord) -> bool,
+        emit: impl FnMut(CompactBlockRecord) -> bool,
     ) -> Result<(), IndexError> {
         let txn = self.env.read_txn()?;
         let state = self.read_generation(&txn, generation)?;
+        self.read_range_in(&txn, state, start, end, emit)
+    }
+
+    /// Reads an inclusive range against the current generation, with no generation check:
+    /// a caller streaming across commits verifies chain continuity between calls itself.
+    pub fn read_range_latest(
+        &self,
+        start: u32,
+        end: u32,
+        emit: impl FnMut(CompactBlockRecord) -> bool,
+    ) -> Result<(), IndexError> {
+        let txn = self.env.read_txn()?;
+        let state = read_state(self.metadata, &txn)?;
+        self.read_range_in(&txn, state, start, end, emit)
+    }
+
+    fn read_range_in(
+        &self,
+        txn: &RoTxn<'_>,
+        state: IndexState,
+        start: u32,
+        end: u32,
+        mut emit: impl FnMut(CompactBlockRecord) -> bool,
+    ) -> Result<(), IndexError> {
         let tip = state
             .durable_tip
             .ok_or(IndexError::Coverage { height: start })?;
@@ -222,7 +246,7 @@ impl Index {
                 let range_start = height - height % RANGE_SIZE;
                 let bytes = self
                     .sealed_ranges
-                    .get(&txn, &range_start)?
+                    .get(txn, &range_start)?
                     .ok_or(IndexError::Coverage { height })?;
                 let range = RangeDecoder::new(bytes)?;
                 let chunk_end = if ascending {
@@ -239,7 +263,7 @@ impl Index {
                     }
                     height = if ascending { height + 1 } else { height - 1 };
                 }
-            } else if !emit(self.read_record(&txn, state, height)?) {
+            } else if !emit(self.read_record(txn, state, height)?) {
                 return Ok(());
             }
 
@@ -985,6 +1009,15 @@ mod tests {
             index.read_block(state.generation() - 1, 0),
             Err(IndexError::Generation { .. })
         ));
+
+        let mut latest = Vec::new();
+        index
+            .read_range_latest(1_002, 998, |block| {
+                latest.push(block.height);
+                true
+            })
+            .unwrap();
+        assert_eq!(latest, descending);
     }
 
     #[test]

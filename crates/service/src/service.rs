@@ -417,10 +417,13 @@ impl CompactService {
         let ascending = start <= end;
         let durable_tip = snapshot.durable_tip.map(|tip| tip.height);
         let mut cursor = Some(start);
-        let mut records = Vec::new().into_iter();
+        let mut records = Vec::<CompactBlockRecord>::new().into_iter();
+        // (hash, previous_hash) of the last record sent; every chunk must chain onto it.
+        let mut last: Option<(Digest, Digest)> = None;
         Ok(Box::pin(tokio_stream::iter(std::iter::from_fn(
             move || loop {
                 if let Some(record) = records.next() {
+                    last = Some((record.hash, record.previous_hash));
                     return Some(Ok(if nullifiers {
                         compact_block_nullifiers(&record, pools)
                     } else {
@@ -443,7 +446,7 @@ impl CompactService {
                 }
                 let mut chunk = Vec::with_capacity(64);
                 let result = if durable {
-                    index.read_range(snapshot.generation, height, chunk_end, |record| {
+                    index.read_range_latest(height, chunk_end, |record| {
                         chunk.push(record);
                         true
                     })
@@ -465,7 +468,24 @@ impl CompactService {
                 };
                 if let Err(error) = result {
                     cursor = None;
-                    return Some(Err(index_status(error)));
+                    return Some(Err(match error {
+                        // Validation saw this height; if the index no longer has it, the chain shrank.
+                        IndexError::Coverage { height } if durable => reorganized(height),
+                        other => index_status(other),
+                    }));
+                }
+                if let Some((last_hash, last_previous)) = last
+                    && let Some(first) = chunk.first()
+                {
+                    let continuous = if ascending {
+                        first.previous_hash == last_hash
+                    } else {
+                        last_previous == first.hash
+                    };
+                    if !continuous {
+                        cursor = None;
+                        return Some(Err(reorganized(first.height)));
+                    }
                 }
                 cursor = (chunk_end != end).then_some(if ascending {
                     chunk_end + 1
@@ -1034,6 +1054,12 @@ fn source_status(error: zakura_state::BoxError) -> Status {
     Status::unavailable(format!("Zakura read failed: {error}"))
 }
 
+fn reorganized(height: u32) -> Status {
+    Status::unavailable(format!(
+        "chain reorganized while streaming at height {height}; restart from a fresh tip"
+    ))
+}
+
 fn index_status(error: IndexError) -> Status {
     match error {
         IndexError::Coverage { .. } => Status::out_of_range(error.to_string()),
@@ -1150,19 +1176,9 @@ mod tests {
                         source_error: None,
                     }
                 );
-                let range = proto::BlockRange {
-                    start: Some(proto::BlockId {
-                        height: 1_002,
-                        hash: Vec::new(),
-                    }),
-                    end: Some(proto::BlockId {
-                        height: 998,
-                        hash: Vec::new(),
-                    }),
-                    pool_types: Vec::new(),
-                };
+                let descending = range(1_002, 998);
                 let mut stream = service
-                    .get_block_range(Request::new(range.clone()))
+                    .get_block_range(Request::new(descending.clone()))
                     .await
                     .unwrap()
                     .into_inner();
@@ -1177,17 +1193,7 @@ mod tests {
                     .unwrap();
                 assert!(service.readiness().tip);
                 let mut stream = service
-                    .get_block_range(Request::new(proto::BlockRange {
-                        start: Some(proto::BlockId {
-                            height: 1_004,
-                            hash: Vec::new(),
-                        }),
-                        end: Some(proto::BlockId {
-                            height: 1_007,
-                            hash: Vec::new(),
-                        }),
-                        pool_types: Vec::new(),
-                    }))
+                    .get_block_range(Request::new(range(1_004, 1_007)))
                     .await
                     .unwrap()
                     .into_inner();
@@ -1197,17 +1203,7 @@ mod tests {
                 }
                 assert_eq!(heights, [1_004, 1_005, 1_006, 1_007]);
 
-                let recovery_range = proto::BlockRange {
-                    start: Some(proto::BlockId {
-                        height: 1_004,
-                        hash: Vec::new(),
-                    }),
-                    end: Some(proto::BlockId {
-                        height: 1_007,
-                        hash: Vec::new(),
-                    }),
-                    pool_types: Vec::new(),
-                };
+                let recovery_range = range(1_004, 1_007);
                 let mut pinned = service
                     .get_block_range(Request::new(recovery_range.clone()))
                     .await
@@ -1262,7 +1258,7 @@ mod tests {
                     tonic::Code::Unavailable
                 );
 
-                let mut transparent = range;
+                let mut transparent = descending;
                 transparent.pool_types = vec![proto::PoolType::Transparent as i32];
                 assert_eq!(
                     service
@@ -1349,6 +1345,205 @@ mod tests {
             });
     }
 
+    #[test]
+    fn range_stream_survives_a_durable_advance_mid_flight() {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let dir = tempfile::tempdir().unwrap();
+                let index = Arc::new(
+                    Index::open(dir.path(), 10 * 1024 * 1024, "Mainnet", [9; 32]).unwrap(),
+                );
+                let state = index_through(&index, 200);
+                let (_state_service, read_service, _tip, _change) = zakura_state::init(
+                    Config::ephemeral(),
+                    &Network::Mainnet,
+                    block::Height::MAX,
+                    0,
+                )
+                .await
+                .expect("ephemeral state initializes");
+                let service = CompactService::new(Arc::clone(&index), state, "main", read_service);
+
+                let mut stream = service
+                    .get_block_range(Request::new(range(0, 200)))
+                    .await
+                    .unwrap()
+                    .into_inner();
+                assert_eq!(stream.next().await.unwrap().unwrap().height, 0);
+
+                // A durable advance lands under the stream.
+                let mut builder = OrderedBuilder::new(state, 1024 * 1024).unwrap();
+                for height in 201..=205 {
+                    builder.push(parsed(height)).unwrap();
+                }
+                let batch = builder
+                    .build_batch(Some(205), Some(205), 1024 * 1024)
+                    .unwrap()
+                    .expect("the builder holds five blocks");
+                let advanced = index.write(batch).unwrap();
+                assert_eq!(advanced.generation(), state.generation() + 1);
+
+                let mut heights = vec![0];
+                while let Some(block) = stream.next().await {
+                    heights.push(block.unwrap().height);
+                }
+                assert_eq!(heights, (0..=200).collect::<Vec<_>>());
+            });
+    }
+
+    #[test]
+    fn range_stream_refuses_a_reorg_it_cannot_chain_onto() {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let dir = tempfile::tempdir().unwrap();
+                let index = Arc::new(
+                    Index::open(dir.path(), 10 * 1024 * 1024, "Mainnet", [9; 32]).unwrap(),
+                );
+                let state = index_through(&index, 200);
+                let (_state_service, read_service, _tip, _change) = zakura_state::init(
+                    Config::ephemeral(),
+                    &Network::Mainnet,
+                    block::Height::MAX,
+                    0,
+                )
+                .await
+                .expect("ephemeral state initializes");
+                let service = CompactService::new(Arc::clone(&index), state, "main", read_service);
+
+                let mut stream = service
+                    .get_block_range(Request::new(range(0, 200)))
+                    .await
+                    .unwrap()
+                    .into_inner();
+                assert_eq!(stream.next().await.unwrap().unwrap().height, 0);
+
+                // A competing chain replaces everything above 30; the next chunk cannot link onto 63.
+                let fork_hash = |height: u32| {
+                    let mut digest = hash(height);
+                    digest[31] = 0xff;
+                    digest
+                };
+                let fork: Vec<CompactBlockRecord> = (31..=205)
+                    .map(|height| {
+                        let mut forked = record(height);
+                        forked.hash = fork_hash(height);
+                        if height > 31 {
+                            forked.previous_hash = fork_hash(height - 1);
+                        }
+                        forked
+                    })
+                    .collect();
+                index
+                    .replace_mutable_suffix(
+                        state.generation(),
+                        BlockId::new(30, hash(30)),
+                        fork,
+                        None,
+                    )
+                    .unwrap();
+
+                let mut heights = vec![0];
+                let mut refusal = None;
+                while let Some(item) = stream.next().await {
+                    match item {
+                        Ok(block) => heights.push(block.height),
+                        Err(status) => {
+                            refusal = Some(status);
+                            break;
+                        }
+                    }
+                }
+                assert_eq!(heights, (0..=63).collect::<Vec<_>>());
+                assert_eq!(
+                    refusal.expect("the boundary is refused").code(),
+                    tonic::Code::Unavailable
+                );
+            });
+    }
+
+    #[test]
+    fn descending_range_from_the_volatile_head_survives_an_advance() {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let dir = tempfile::tempdir().unwrap();
+                let index = Arc::new(
+                    Index::open(dir.path(), 10 * 1024 * 1024, "Mainnet", [9; 32]).unwrap(),
+                );
+                let state = index_through(&index, 200);
+                let (_state_service, read_service, _tip, _change) = zakura_state::init(
+                    Config::ephemeral(),
+                    &Network::Mainnet,
+                    block::Height::MAX,
+                    0,
+                )
+                .await
+                .expect("ephemeral state initializes");
+                let service = CompactService::new(Arc::clone(&index), state, "main", read_service);
+                service
+                    .publish_head(state, vec![record(201), record(202)])
+                    .unwrap();
+
+                // The first chunk is volatile, the rest is durable and read after an advance.
+                let mut stream = service
+                    .get_block_range(Request::new(range(202, 100)))
+                    .await
+                    .unwrap()
+                    .into_inner();
+                assert_eq!(stream.next().await.unwrap().unwrap().height, 202);
+                let mut builder = OrderedBuilder::new(state, 1024 * 1024).unwrap();
+                for height in 201..=205 {
+                    builder.push(parsed(height)).unwrap();
+                }
+                let batch = builder
+                    .build_batch(Some(205), Some(205), 1024 * 1024)
+                    .unwrap()
+                    .expect("the builder holds five blocks");
+                index.write(batch).unwrap();
+
+                let mut heights = vec![202];
+                while let Some(block) = stream.next().await {
+                    heights.push(block.unwrap().height);
+                }
+                assert_eq!(heights, (100..=202).rev().collect::<Vec<_>>());
+            });
+    }
+
+    fn range(start: u32, end: u32) -> proto::BlockRange {
+        proto::BlockRange {
+            start: Some(proto::BlockId {
+                height: u64::from(start),
+                hash: Vec::new(),
+            }),
+            end: Some(proto::BlockId {
+                height: u64::from(end),
+                hash: Vec::new(),
+            }),
+            pool_types: Vec::new(),
+        }
+    }
+
+    fn parsed(height: u32) -> ParsedCompactBlock {
+        ParsedCompactBlock {
+            height,
+            hash: hash(height),
+            previous_hash: height.checked_sub(1).map(hash).unwrap_or([0; 32]),
+            time: height,
+            transactions: Vec::new(),
+            sapling_additions: 0,
+            orchard_additions: 0,
+            ironwood_additions: 0,
+        }
+    }
+
     fn raw_block(height: u32) -> RawIndexBlock {
         let mut bytes = vec![0; 140];
         bytes[4..36].copy_from_slice(&height.checked_sub(1).map(hash).unwrap_or([0; 32]));
@@ -1376,18 +1571,7 @@ mod tests {
     fn index_through(index: &Index, tip: u32) -> IndexState {
         let mut builder = OrderedBuilder::new(IndexState::default(), 1024 * 1024).unwrap();
         for height in 0..=tip {
-            builder
-                .push(ParsedCompactBlock {
-                    height,
-                    hash: hash(height),
-                    previous_hash: height.checked_sub(1).map(hash).unwrap_or([0; 32]),
-                    time: height,
-                    transactions: Vec::new(),
-                    sapling_additions: 0,
-                    orchard_additions: 0,
-                    ironwood_additions: 0,
-                })
-                .unwrap();
+            builder.push(parsed(height)).unwrap();
         }
         let mut state = IndexState::default();
         while let Some(batch) = builder
