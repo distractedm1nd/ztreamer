@@ -31,10 +31,11 @@ Certificate changes require a restart. The Prometheus listener is not covered by
 
 ## Protocol compatibility
 
- All `lightwallet-protocol` methods are implemented except `GetMempoolTx`. We intentionally deviate `lightwallet-protocol` for two other requests:
+ All `lightwallet-protocol` methods are implemented. We intentionally deviate `lightwallet-protocol` for three requests:
 
 - `GetBlock` excludes transparent data, which current wallets do not request.
 - `GetBlockRange` rejects transparent filters to avoid their bandwidth cost.
+- `GetMempoolTx` rejects transparent filters for the same reason.
 
 Ztreamer supports direct, in-process Zakura mode. It serves 24 of the 27 JSON-RPC requests provided by Zaino direct mode.
 

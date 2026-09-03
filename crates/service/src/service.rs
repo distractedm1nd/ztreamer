@@ -22,7 +22,7 @@ use zakura_chain::{
 use zakura_state::{ReadRequest, ReadResponse, ReadStateService};
 use zakurad::node::NodeClient;
 
-use crate::serve::{PoolSelection, compact_block, compact_block_nullifiers};
+use crate::serve::{PoolSelection, compact_block, compact_block_nullifiers, compact_mempool_txs};
 use ztreamer_indexer::{
     Digest,
     codec::CompactBlockRecord,
@@ -832,6 +832,17 @@ impl CompactService {
         Ok(Box::pin(ReceiverStream::new(receiver)))
     }
 
+    pub(crate) async fn mempool_tx(
+        &self,
+        request: proto::GetMempoolTxRequest,
+    ) -> Result<RpcStream<proto::CompactTx>, Status> {
+        PoolSelection::from_request(&request.pool_types)?;
+        let node = self.node()?.clone();
+        let transactions = Self::mempool_transactions(node).await?;
+        let compact = mempool_compact(transactions, &request)?;
+        Ok(Box::pin(tokio_stream::iter(compact.into_iter().map(Ok))))
+    }
+
     async fn mempool_transactions(node: NodeClient) -> Result<Vec<transaction::UnminedTx>, Status> {
         let runtime = tokio::runtime::Handle::current();
         // Zakura's mempool service future is not Send.
@@ -1010,10 +1021,24 @@ impl CompactService {
             .as_ref()
             .ok_or_else(|| Status::unavailable("embedded Zakura node handle is unavailable"))
     }
+}
 
-    pub(crate) fn unsupported(method: &'static str) -> Status {
-        Status::unimplemented(format!("Ztreamer does not support {method}"))
-    }
+fn mempool_compact(
+    transactions: Vec<transaction::UnminedTx>,
+    request: &proto::GetMempoolTxRequest,
+) -> Result<Vec<proto::CompactTx>, Status> {
+    let pools = PoolSelection::from_request(&request.pool_types)?;
+    let transactions = transactions
+        .into_iter()
+        .map(|transaction| {
+            transaction
+                .transaction()
+                .zcash_serialize_to_vec()
+                .map(|bytes| (bytes, transaction.id().mined_id()))
+                .map_err(|error| Status::internal(error.to_string()))
+        })
+        .collect::<Result<Vec<_>, Status>>()?;
+    compact_mempool_txs(&transactions, pools, &request.exclude_txid_suffixes)
 }
 
 fn range_heights(request: &proto::BlockRange) -> Result<(u32, u32), Status> {
@@ -1077,6 +1102,7 @@ mod tests {
     use zakura_state::Config;
     use ztreamer_protocol::proto::compact_tx_streamer_server::CompactTxStreamer;
 
+    use zakura_test::vectors::{BLOCK_MAINNET_949496_BYTES, BLOCK_TESTNET_1842421_BYTES};
     use ztreamer_indexer::{
         codec::CompactBlockRecord,
         head::HeadError,
@@ -1282,13 +1308,27 @@ mod tests {
                 assert_eq!(
                     CompactTxStreamer::get_mempool_tx(
                         &service,
+                        Request::new(proto::GetMempoolTxRequest {
+                            pool_types: vec![proto::PoolType::Transparent as i32],
+                            ..Default::default()
+                        }),
+                    )
+                    .await
+                    .err()
+                    .unwrap()
+                    .code(),
+                    tonic::Code::InvalidArgument
+                );
+                assert_eq!(
+                    CompactTxStreamer::get_mempool_tx(
+                        &service,
                         Request::new(proto::GetMempoolTxRequest::default()),
                     )
                     .await
                     .err()
                     .unwrap()
                     .code(),
-                    tonic::Code::Unimplemented
+                    tonic::Code::Unavailable
                 );
                 assert_eq!(
                     CompactTxStreamer::get_mempool_stream(&service, Request::new(proto::Empty {}),)
@@ -1515,6 +1555,75 @@ mod tests {
                 }
                 assert_eq!(heights, (100..=202).rev().collect::<Vec<_>>());
             });
+    }
+
+    #[test]
+    fn mempool_requests_select_their_pools_and_exclusions() {
+        let sapling = shielded_mempool_transaction(&BLOCK_MAINNET_949496_BYTES, |transaction| {
+            transaction.sapling_outputs().next().is_some()
+        });
+        let orchard = shielded_mempool_transaction(&BLOCK_TESTNET_1842421_BYTES, |transaction| {
+            transaction.orchard_actions().next().is_some()
+        });
+        let sapling_txid = sapling.id().mined_id().0.to_vec();
+        let orchard_txid = orchard.id().mined_id().0.to_vec();
+        let mempool = vec![sapling, orchard];
+        let txids = |compact: Vec<proto::CompactTx>| {
+            compact
+                .into_iter()
+                .map(|transaction| transaction.txid)
+                .collect::<Vec<_>>()
+        };
+
+        let compact =
+            mempool_compact(mempool.clone(), &proto::GetMempoolTxRequest::default()).unwrap();
+        assert_eq!(
+            txids(compact.clone()),
+            [sapling_txid.clone(), orchard_txid.clone()]
+        );
+        assert!(!compact[0].outputs.is_empty());
+        assert!(!compact[1].actions.is_empty());
+
+        let orchard_only = proto::GetMempoolTxRequest {
+            pool_types: vec![proto::PoolType::Orchard as i32],
+            ..Default::default()
+        };
+        assert_eq!(
+            txids(mempool_compact(mempool.clone(), &orchard_only).unwrap()),
+            vec![orchard_txid.clone()]
+        );
+
+        let excluded = proto::GetMempoolTxRequest {
+            exclude_txid_suffixes: vec![orchard_txid[30..].to_vec()],
+            ..Default::default()
+        };
+        assert_eq!(
+            txids(mempool_compact(mempool.clone(), &excluded).unwrap()),
+            [sapling_txid]
+        );
+
+        let transparent = proto::GetMempoolTxRequest {
+            pool_types: vec![proto::PoolType::Transparent as i32],
+            ..Default::default()
+        };
+        assert_eq!(
+            mempool_compact(mempool, &transparent).unwrap_err().code(),
+            tonic::Code::InvalidArgument
+        );
+    }
+
+    fn shielded_mempool_transaction(
+        block: &[u8],
+        shielded: impl Fn(&transaction::Transaction) -> bool,
+    ) -> transaction::UnminedTx {
+        block::Block::zcash_deserialize(block)
+            .unwrap()
+            .transactions
+            .iter()
+            .find(|candidate| shielded(candidate))
+            .cloned()
+            .expect("the block vector holds a shielded transaction")
+            .into()
     }
 
     fn range(start: u32, end: u32) -> proto::BlockRange {

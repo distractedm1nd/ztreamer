@@ -157,9 +157,9 @@ impl CompactTxStreamer for CompactService {
 
     async fn get_mempool_tx(
         &self,
-        _request: Request<proto::GetMempoolTxRequest>,
+        request: Request<proto::GetMempoolTxRequest>,
     ) -> Result<Response<Self::GetMempoolTxStream>, Status> {
-        Err(Self::unsupported("GetMempoolTx"))
+        Ok(Response::new(self.mempool_tx(request.into_inner()).await?))
     }
 
     async fn get_mempool_stream(
