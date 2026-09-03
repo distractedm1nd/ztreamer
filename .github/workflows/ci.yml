@@ -28,3 +28,56 @@ jobs:
       - uses: taiki-e/install-action@nextest
       - run: sudo apt-get update && sudo apt-get install --yes protobuf-compiler
       - run: cargo nextest run --workspace --locked
+
+  bench:
+    name: Bench
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install --yes protobuf-compiler
+      - name: Bench
+        run: |
+          set -euo pipefail
+          benches() {
+            cargo bench --locked --bench parser --bench codec --bench serve -- --noplot "$@"
+          }
+          if [[ ${{ github.event_name }} != pull_request ]]; then
+            benches
+            exit 0
+          fi
+          git fetch --depth=1 origin "${{ github.event.pull_request.base.sha }}"
+          if ! git cat-file -e "${{ github.event.pull_request.base.sha }}:crates/indexer/benches/parser.rs"; then
+            benches
+            exit 0
+          fi
+          head=$(git rev-parse HEAD)
+          git checkout --quiet "${{ github.event.pull_request.base.sha }}"
+          benches --save-baseline base
+          git checkout --quiet "$head"
+          benches --baseline-lenient base | tee bench-pr.txt
+          {
+            echo "## Criterion vs \`${{ github.event.pull_request.base.sha }}\`"
+            if grep -q 'Performance has regressed' bench-pr.txt; then
+              echo '**Regression detected.**'
+            elif grep -q 'Performance has improved' bench-pr.txt; then
+              echo 'Improvements detected.'
+            else
+              echo 'No significant change.'
+            fi
+            echo
+            echo '```'
+            grep -B1 -A1 'change:' bench-pr.txt || true
+            echo '```'
+          } | tee bench-comment.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: marocchino/sticky-pull-request-comment@v2
+        if: github.event_name == 'pull_request' && hashFiles('bench-comment.md') != ''
+        with:
+          header: criterion-bench
+          path: bench-comment.md
