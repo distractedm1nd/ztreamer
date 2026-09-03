@@ -55,10 +55,6 @@ impl CompactBlockRecord {
             .map_err(|_| CodecError::Length)
     }
 
-    pub(crate) fn encoded_len(&self) -> Result<usize, CodecError> {
-        Self::encoded_len_for_transactions(&self.transactions)
-    }
-
     pub(crate) fn encoded_len_for_transactions(
         transactions: &[CompactTransaction],
     ) -> Result<usize, CodecError> {
@@ -113,19 +109,10 @@ pub fn encode_range(records: &[CompactBlockRecord]) -> Result<Vec<u8>, CodecErro
         .checked_add(1)
         .and_then(|len| len.checked_mul(size_of::<u32>()))
         .ok_or(CodecError::Length)?;
-    // body size is (4 byte record length + serialized record) for each record
-    let body_len = records.iter().try_fold(0usize, |total, record| {
-        let record_len = record.encoded_len()?;
-        total
-            .checked_add(size_of::<u32>())
-            .and_then(|total| total.checked_add(record_len))
-            .ok_or(CodecError::Length)
-    })?;
-    // total size is 1 byte version + 2 u32 start/end height fields + 2 Digest fields + offset table + body
+    // only preallocate the fixed envelope to avoid a second pass
     let capacity = 1usize
         .checked_add(2 * size_of::<u32>() + 2 * size_of::<Digest>())
         .and_then(|len| len.checked_add(offsets_len))
-        .and_then(|len| len.checked_add(body_len))
         .ok_or(CodecError::Length)?;
     let mut bytes = Vec::with_capacity(capacity);
     bytes.push(RANGE_FORMAT_VERSION);
@@ -162,7 +149,6 @@ pub fn encode_range(records: &[CompactBlockRecord]) -> Result<Vec<u8>, CodecErro
         offsets_start + records.len() * size_of::<u32>(),
         final_offset,
     )?;
-    debug_assert_eq!(final_offset, body_len);
     Ok(bytes)
 }
 
@@ -341,7 +327,10 @@ mod tests {
             },
         };
         let encoded_first = first.encode().unwrap();
-        assert_eq!(encoded_first.len(), first.encoded_len().unwrap());
+        assert_eq!(
+            encoded_first.len(),
+            CompactBlockRecord::encoded_len_for_transactions(&first.transactions).unwrap()
+        );
         assert_eq!(CompactBlockRecord::decode(&encoded_first).unwrap(), first);
         assert_eq!(
             CompactBlockRecord::decode(&[encoded_first, vec![0]].concat()),
