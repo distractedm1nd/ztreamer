@@ -21,7 +21,8 @@ use ztreamer_indexer::{
 use ztreamer_protocol::proto::compact_tx_streamer_server::CompactTxStreamerServer;
 use ztreamer_service::{CompactService, HeadFollowerConfig, p2p::P2pCompactService};
 
-const DEFAULT_MAP_SIZE: usize = 16 * 1024 * 1024 * 1024;
+/// Must be large enough to hold full mainnet index, which is 21 GiB at the time of writing
+const DEFAULT_MAP_SIZE: usize = 64 * 1024 * 1024 * 1024;
 
 #[derive(Debug, Parser)]
 #[command(version, about = "CompactTxStreamer daemon backed by embedded Zakura")]
