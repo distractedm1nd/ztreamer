@@ -269,7 +269,7 @@ pub(crate) fn parse_stored_block<'a>(
     })
 }
 
-fn parse_transaction(
+pub fn parse_transaction(
     bytes: &[u8],
     txid: transaction::Hash,
     index: u64,
