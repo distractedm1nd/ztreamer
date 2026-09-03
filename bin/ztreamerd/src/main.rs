@@ -71,6 +71,10 @@ struct Cli {
     #[arg(long, value_name = "FILE", requires = "tls_cert")]
     tls_key: Option<PathBuf>,
 
+    /// Answer Ping. Testing only.
+    #[arg(long)]
+    ping_very_insecure: bool,
+
     /// Exit after historical indexing instead of starting servers and the head follower.
     #[arg(long)]
     index_only: bool,
@@ -192,7 +196,8 @@ async fn main() -> Result<()> {
     }
 
     let compact =
-        CompactService::with_node(index, state, network.bip70_network_name(), client.clone());
+        CompactService::with_node(index, state, network.bip70_network_name(), client.clone())
+            .with_ping_enabled(cli.ping_very_insecure);
     let mut startup_client = client.clone();
     match compact.sync_head(&mut startup_client, pipeline).await {
         Err(HeadSyncError::DeepReorg { .. }) => {

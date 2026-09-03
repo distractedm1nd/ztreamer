@@ -149,6 +149,7 @@ pub struct CompactService {
     zakura: ReadStateService,
     node: Option<NodeClient>,
     range_readers: Arc<Semaphore>,
+    ping_enabled: bool,
 }
 
 impl CompactService {
@@ -167,6 +168,7 @@ impl CompactService {
             zakura,
             node: None,
             range_readers: Arc::new(Semaphore::new(MAX_RANGE_READERS)),
+            ping_enabled: false,
         }
     }
 
@@ -179,6 +181,11 @@ impl CompactService {
         let mut service = Self::new(index, state, chain_name, node.read_state());
         service.node = Some(node);
         service
+    }
+
+    pub fn with_ping_enabled(mut self, enabled: bool) -> Self {
+        self.ping_enabled = enabled;
+        self
     }
 
     pub fn publish(&self, state: IndexState) {
@@ -622,8 +629,13 @@ impl CompactService {
         }
     }
 
-    pub(crate) fn ping(&self) -> proto::PingResponse {
-        proto::PingResponse { entry: 1, exit: 0 }
+    pub(crate) fn ping(&self) -> Result<proto::PingResponse, Status> {
+        if !self.ping_enabled {
+            return Err(Status::unimplemented(
+                "Ping is disabled; start ztreamerd with --ping-very-insecure to enable it",
+            ));
+        }
+        Ok(proto::PingResponse { entry: 1, exit: 0 })
     }
 
     pub(crate) async fn transaction(
@@ -1144,6 +1156,43 @@ mod tests {
                 assert_eq!(service.snapshot().visible_tip.unwrap().height, 12);
                 shutdown.send(true).unwrap();
                 follower.await.unwrap().unwrap();
+            });
+    }
+
+    #[test]
+    fn ping_answers_only_when_enabled() {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let dir = tempfile::tempdir().unwrap();
+                let index = Arc::new(
+                    Index::open(dir.path(), 10 * 1024 * 1024, "Mainnet", [9; 32]).unwrap(),
+                );
+                let (_state_service, read_service, _tip, _change) = zakura_state::init(
+                    Config::ephemeral(),
+                    &Network::Mainnet,
+                    block::Height::MAX,
+                    0,
+                )
+                .await
+                .expect("ephemeral state initializes");
+                let service =
+                    CompactService::new(index, IndexState::default(), "main", read_service);
+
+                assert_eq!(
+                    service
+                        .clone()
+                        .with_ping_enabled(false)
+                        .ping()
+                        .unwrap_err()
+                        .code(),
+                    tonic::Code::Unimplemented
+                );
+                assert_eq!(
+                    service.with_ping_enabled(true).ping().unwrap(),
+                    proto::PingResponse { entry: 1, exit: 0 }
+                );
             });
     }
 

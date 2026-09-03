@@ -167,7 +167,7 @@ impl P2pCompactService {
             ),
             Message::PingRequest => unary!(
                 proto::Duration,
-                _request => Ok::<_, Status>(compact.ping()),
+                _request => compact.ping(),
                 Message::PingResponse
             ),
             _ => Err(()),

@@ -42,14 +42,16 @@
 <tr><td>--source-segment-blocks N</td><td>Consecutive blocks per fetch worker. <s>256</s></td></tr>
 <tr><td>--max-pending-bytes N</td><td>Bytes awaiting ordered ingestion. <s>256 MiB</s></td></tr>
 <tr><td>--max-batch-bytes N</td><td>Index write batch. <s>16 MiB</s></td></tr>
+<tr><td>--ping-very-insecure</td><td>Answer <code>Ping</code>. Testing only.</td></tr>
 <tr><td>--index-only</td><td>Build the index and exit.</td></tr>
 </table>
 <p>Logging is <code>RUST_LOG</code>, default <code>info</code>. Ctrl-C shuts down in order: index writer, then Zakura.</p>
 
 <h2>protocol</h2>
-<p>Every <code>CompactTxStreamer</code> method, with three exceptions.</p>
+<p>Every <code>CompactTxStreamer</code> method, with four exceptions.</p>
 <table>
 <tr><td>GetMempoolTx</td><td>Unimplemented.</td></tr>
+<tr><td>Ping</td><td>Disabled unless <code>--ping-very-insecure</code> is set. It is a denial-of-service vector.</td></tr>
 <tr><td>GetBlock</td><td>No transparent data. No wallet reads it.</td></tr>
 <tr><td>GetBlockRange</td><td>Rejects transparent filters. Range scans of transparent data cost more bandwidth than they are worth.</td></tr>
 </table>

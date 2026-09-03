@@ -97,7 +97,7 @@ impl CompactTxStreamer for CompactService {
         &self,
         _request: Request<proto::Duration>,
     ) -> Result<Response<proto::PingResponse>, Status> {
-        Ok(Response::new(self.ping()))
+        Ok(Response::new(self.ping()?))
     }
 
     async fn send_transaction(
