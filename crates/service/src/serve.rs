@@ -70,6 +70,13 @@ fn convert_block(
     pools: PoolSelection,
     nullifiers_only: bool,
 ) -> proto::CompactBlock {
+    let mut vtx = Vec::with_capacity(record.transactions.len());
+    for transaction in &record.transactions {
+        if let Some(transaction) = convert_transaction(transaction, pools, nullifiers_only) {
+            vtx.push(transaction);
+        }
+    }
+
     proto::CompactBlock {
         height: u64::from(record.height),
         hash: record.hash.to_vec(),
@@ -77,11 +84,7 @@ fn convert_block(
         time: record.time,
         // CompactTxStreamer has historically left this field unset.
         header: Vec::new(),
-        vtx: record
-            .transactions
-            .iter()
-            .filter_map(|transaction| convert_transaction(transaction, pools, nullifiers_only))
-            .collect(),
+        vtx,
         chain_metadata: Some(if nullifiers_only {
             proto::ChainMetadata::default()
         } else {
