@@ -148,7 +148,7 @@ jobs:
               print("</details>")
           PY
       - uses: marocchino/sticky-pull-request-comment@v2
-        if: github.event_name == 'pull_request' && hashFiles('bench-comment.md') != ''
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && hashFiles('bench-comment.md') != ''
         with:
           header: criterion-bench
           path: bench-comment.md
