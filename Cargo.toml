@@ -1,10 +1,11 @@
 [workspace]
 resolver = "3"
-members = ["bin/ztreamerd", "crates/indexer", "crates/protocol", "crates/service"]
+members = ["bin/ztreamerd", "crates/indexer", "crates/node", "crates/protocol", "crates/service"]
 
 [workspace.dependencies]
-zakura-chain = { git = "https://github.com/distractedm1nd/zakura.git", branch = "indexing" }
-zakura-network = { git = "https://github.com/distractedm1nd/zakura.git", branch = "indexing" }
-zakura-state = { git = "https://github.com/distractedm1nd/zakura.git", branch = "indexing" }
-zakura-test = { git = "https://github.com/distractedm1nd/zakura.git", branch = "indexing" }
-zakurad = { package = "zakura", git = "https://github.com/distractedm1nd/zakura.git", branch = "indexing", default-features = false }
+zakura-chain = { git = "https://github.com/distractedm1nd/zakura.git", branch = "expose-api" }
+zakura-network = { git = "https://github.com/distractedm1nd/zakura.git", branch = "expose-api" }
+zakura-state = { git = "https://github.com/distractedm1nd/zakura.git", branch = "expose-api" }
+zakura-test = { git = "https://github.com/distractedm1nd/zakura.git", branch = "expose-api" }
+zakurad = { package = "zakura", git = "https://github.com/distractedm1nd/zakura.git", branch = "expose-api", default-features = false }
+zakura-node-services = { git = "https://github.com/distractedm1nd/zakura.git", branch = "expose-api" }

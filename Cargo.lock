@@ -6996,8 +6996,8 @@ checksum = "2164e798d9e3d84ee2c91139ace54638059a3b23e361f5c11781c2c6459bde0f"
 
 [[package]]
 name = "zakura"
-version = "1.3.0"
-source = "git+https://github.com/distractedm1nd/zakura.git?branch=indexing#0359ffc214f1a8a504c31031c5921a6438a98f61"
+version = "1.3.1"
+source = "git+https://github.com/distractedm1nd/zakura.git?branch=expose-api#f4d44dd5cce281f0e35cbb84421c1f6a7474957c"
 dependencies = [
  "abscissa_core",
  "bytes",
@@ -7055,9 +7055,9 @@ dependencies = [
 
 [[package]]
 name = "zakura-assets"
-version = "0.3462171.0"
+version = "0.3466571.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1518d74211e0ae2422cab4560acdc67f72ae8fcdb871294eb03476a5a4586a74"
+checksum = "cdad84f915d23f50eeb7389fd1ffc2385b35c57c68ceb2df20c73b7724621a30"
 
 [[package]]
 name = "zakura-bellman"
@@ -7091,8 +7091,8 @@ dependencies = [
 
 [[package]]
 name = "zakura-chain"
-version = "6.0.0"
-source = "git+https://github.com/distractedm1nd/zakura.git?branch=indexing#0359ffc214f1a8a504c31031c5921a6438a98f61"
+version = "6.1.0"
+source = "git+https://github.com/distractedm1nd/zakura.git?branch=expose-api#f4d44dd5cce281f0e35cbb84421c1f6a7474957c"
 dependencies = [
  "bech32",
  "bitflags 2.13.1",
@@ -7152,7 +7152,7 @@ dependencies = [
 [[package]]
 name = "zakura-consensus"
 version = "7.0.0"
-source = "git+https://github.com/distractedm1nd/zakura.git?branch=indexing#0359ffc214f1a8a504c31031c5921a6438a98f61"
+source = "git+https://github.com/distractedm1nd/zakura.git?branch=expose-api#f4d44dd5cce281f0e35cbb84421c1f6a7474957c"
 dependencies = [
  "blake2b_simd",
  "chrono",
@@ -7243,8 +7243,8 @@ dependencies = [
 
 [[package]]
 name = "zakura-header-chain"
-version = "1.0.0"
-source = "git+https://github.com/distractedm1nd/zakura.git?branch=indexing#0359ffc214f1a8a504c31031c5921a6438a98f61"
+version = "2.0.0"
+source = "git+https://github.com/distractedm1nd/zakura.git?branch=expose-api#f4d44dd5cce281f0e35cbb84421c1f6a7474957c"
 dependencies = [
  "chrono",
  "rayon",
@@ -7256,7 +7256,7 @@ dependencies = [
 [[package]]
 name = "zakura-jsonl-trace"
 version = "1.2.0"
-source = "git+https://github.com/distractedm1nd/zakura.git?branch=indexing#0359ffc214f1a8a504c31031c5921a6438a98f61"
+source = "git+https://github.com/distractedm1nd/zakura.git?branch=expose-api#f4d44dd5cce281f0e35cbb84421c1f6a7474957c"
 dependencies = [
  "serde",
  "serde_json",
@@ -7307,7 +7307,7 @@ dependencies = [
 [[package]]
 name = "zakura-network"
 version = "7.0.0"
-source = "git+https://github.com/distractedm1nd/zakura.git?branch=indexing#0359ffc214f1a8a504c31031c5921a6438a98f61"
+source = "git+https://github.com/distractedm1nd/zakura.git?branch=expose-api#f4d44dd5cce281f0e35cbb84421c1f6a7474957c"
 dependencies = [
  "bitflags 2.13.1",
  "blake2b_simd",
@@ -7346,7 +7346,7 @@ dependencies = [
 [[package]]
 name = "zakura-node-services"
 version = "3.2.1"
-source = "git+https://github.com/distractedm1nd/zakura.git?branch=indexing#0359ffc214f1a8a504c31031c5921a6438a98f61"
+source = "git+https://github.com/distractedm1nd/zakura.git?branch=expose-api#f4d44dd5cce281f0e35cbb84421c1f6a7474957c"
 dependencies = [
  "jsonrpsee-types",
  "reqwest",
@@ -7504,8 +7504,8 @@ dependencies = [
 
 [[package]]
 name = "zakura-rpc"
-version = "8.0.0"
-source = "git+https://github.com/distractedm1nd/zakura.git?branch=indexing#0359ffc214f1a8a504c31031c5921a6438a98f61"
+version = "9.0.0"
+source = "git+https://github.com/distractedm1nd/zakura.git?branch=expose-api#f4d44dd5cce281f0e35cbb84421c1f6a7474957c"
 dependencies = [
  "base64",
  "chrono",
@@ -7600,7 +7600,7 @@ dependencies = [
 [[package]]
 name = "zakura-script"
 version = "3.2.1"
-source = "git+https://github.com/distractedm1nd/zakura.git?branch=indexing#0359ffc214f1a8a504c31031c5921a6438a98f61"
+source = "git+https://github.com/distractedm1nd/zakura.git?branch=expose-api#f4d44dd5cce281f0e35cbb84421c1f6a7474957c"
 dependencies = [
  "libzcash_script",
  "rand 0.8.8",
@@ -7624,8 +7624,8 @@ dependencies = [
 
 [[package]]
 name = "zakura-state"
-version = "7.0.0"
-source = "git+https://github.com/distractedm1nd/zakura.git?branch=indexing#0359ffc214f1a8a504c31031c5921a6438a98f61"
+version = "7.1.0"
+source = "git+https://github.com/distractedm1nd/zakura.git?branch=expose-api#f4d44dd5cce281f0e35cbb84421c1f6a7474957c"
 dependencies = [
  "bincode",
  "chrono",
@@ -7663,7 +7663,7 @@ dependencies = [
 [[package]]
 name = "zakura-test"
 version = "2.1.0"
-source = "git+https://github.com/distractedm1nd/zakura.git?branch=indexing#0359ffc214f1a8a504c31031c5921a6438a98f61"
+source = "git+https://github.com/distractedm1nd/zakura.git?branch=expose-api#f4d44dd5cce281f0e35cbb84421c1f6a7474957c"
 dependencies = [
  "color-eyre",
  "futures",
@@ -7690,7 +7690,7 @@ dependencies = [
 [[package]]
 name = "zakura-tower-batch-control"
 version = "1.3.0"
-source = "git+https://github.com/distractedm1nd/zakura.git?branch=indexing#0359ffc214f1a8a504c31031c5921a6438a98f61"
+source = "git+https://github.com/distractedm1nd/zakura.git?branch=expose-api#f4d44dd5cce281f0e35cbb84421c1f6a7474957c"
 dependencies = [
  "futures",
  "futures-core",
@@ -7706,7 +7706,7 @@ dependencies = [
 [[package]]
 name = "zakura-tower-fallback"
 version = "1.2.0"
-source = "git+https://github.com/distractedm1nd/zakura.git?branch=indexing#0359ffc214f1a8a504c31031c5921a6438a98f61"
+source = "git+https://github.com/distractedm1nd/zakura.git?branch=expose-api#f4d44dd5cce281f0e35cbb84421c1f6a7474957c"
 dependencies = [
  "futures-core",
  "pin-project",
@@ -7956,10 +7956,22 @@ dependencies = [
  "tokio",
  "tonic",
  "tracing",
- "zakura",
  "zakura-chain",
  "zakura-state",
  "zakura-test",
+ "ztreamer-node",
+]
+
+[[package]]
+name = "ztreamer-node"
+version = "0.0.1"
+dependencies = [
+ "color-eyre",
+ "tower 0.4.13",
+ "zakura",
+ "zakura-chain",
+ "zakura-node-services",
+ "zakura-state",
 ]
 
 [[package]]
@@ -7991,6 +8003,7 @@ dependencies = [
  "zakura-state",
  "zakura-test",
  "ztreamer-indexer",
+ "ztreamer-node",
  "ztreamer-protocol",
 ]
 
@@ -8000,12 +8013,19 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "clap",
+ "tempfile",
  "tokio",
+ "tokio-util",
  "tonic",
  "tracing",
  "tracing-subscriber",
  "zakura",
+ "zakura-chain",
+ "zakura-network",
+ "zakura-state",
+ "zakura-test",
  "ztreamer-indexer",
+ "ztreamer-node",
  "ztreamer-protocol",
  "ztreamer-service",
 ]

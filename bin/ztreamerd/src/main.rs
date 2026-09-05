@@ -11,15 +11,19 @@ use std::{
 use anyhow::{Context, Result, anyhow};
 use clap::Parser;
 use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
 use tonic::transport::{Identity, Server, ServerTlsConfig};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
-use zakurad::{components::metrics::MetricsEndpoint, config::ZakuradConfig, node};
+use zakurad::{components::metrics::MetricsEndpoint, config::ZakuradConfig};
 use ztreamer_indexer::{
     head::HeadSyncError, index::Index, pipeline::PipelineConfig, source::ZakuraSource,
 };
+use ztreamer_node as node;
 use ztreamer_protocol::proto::compact_tx_streamer_server::CompactTxStreamerServer;
 use ztreamer_service::{CompactService, HeadFollowerConfig, p2p::P2pCompactService};
+
+mod lifecycle;
 
 /// Must be large enough to hold full mainnet index, which is 21 GiB at the time of writing
 const DEFAULT_MAP_SIZE: usize = 64 * 1024 * 1024 * 1024;
@@ -90,9 +94,10 @@ async fn main() -> Result<()> {
         .init();
 
     // Read and validate the identity before starting the node or the potentially lengthy index.
-    let mut grpc_server = grpc_server(cli.tls_cert.as_deref(), cli.tls_key.as_deref())?;
+    let grpc_server = grpc_server(cli.tls_cert.as_deref(), cli.tls_key.as_deref())?;
 
-    let mut config = ZakuradConfig::load(cli.zakura_config).context("load Zakura configuration")?;
+    let mut config =
+        ZakuradConfig::load(cli.zakura_config.clone()).context("load Zakura configuration")?;
     config.metrics.endpoint_addr = Some(cli.metrics_listen);
     let _metrics = MetricsEndpoint::new(&config.metrics).context("start Prometheus endpoint")?;
     let network = config.network.network.clone();
@@ -105,40 +110,67 @@ async fn main() -> Result<()> {
 
     let p2p = Arc::new(P2pCompactService::pending());
     info!(network = %network, "starting embedded Zakura");
-    let node = node::spawn_with_services(config, vec![p2p.registration()])
+    let shutdown = CancellationToken::new();
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let node = async {
+        // Keep Zakura's large startup future on the heap while polling it here.
+        Box::pin(zakurad::node::run_with_services_ready(
+            config,
+            vec![p2p.registration()],
+            shutdown.clone(),
+            ready_tx,
+        ))
         .await
-        .map_err(|error| anyhow!("start embedded Zakura: {error}"))?;
-    let client = node.client();
-    let signal = tokio::signal::ctrl_c();
-    tokio::pin!(signal);
+        .map_err(|error| anyhow!("Zakura failed: {error}"))
+    };
+    let application = async {
+        let services = tokio::select! {
+            biased;
+            _ = shutdown.cancelled() => return Ok(()),
+            result = ready_rx => result.context("Zakura stopped before readiness")?,
+        };
+        run_application(
+            cli,
+            grpc_server,
+            index,
+            network.bip70_network_name(),
+            p2p.clone(),
+            node::NodeClient::from_services(services),
+            shutdown.clone(),
+        )
+        .await
+    };
 
+    lifecycle::supervise(node, application, shutdown.clone(), async {
+        tokio::signal::ctrl_c()
+            .await
+            .context("Ctrl-C handler failed")
+    })
+    .await
+}
+
+async fn run_application(
+    cli: Cli,
+    mut grpc_server: Server,
+    index: Arc<Index>,
+    chain_name: String,
+    p2p: Arc<P2pCompactService>,
+    client: node::NodeClient,
+    shutdown: CancellationToken,
+) -> Result<()> {
     info!("waiting for Zakura to sync near the chain tip");
     tokio::select! {
         result = client.wait_until_close_to_tip() => {
             result.map_err(|error| anyhow!("wait for Zakura sync: {error}"))?;
         }
-        result = &mut signal => {
-            result.context("install Ctrl-C handler")?;
-            info!("shutting down");
-            return node
-                .shutdown()
-                .await
-                .map_err(|error| anyhow!("shut down embedded Zakura: {error}"));
-        }
+        _ = shutdown.cancelled() => return Ok(()),
     }
     info!(tip = ?client.tip(), "Zakura is near the chain tip");
 
     while client.database().tip().is_none() {
         info!("waiting for Zakura's first finalized block");
         tokio::select! {
-            result = &mut signal => {
-                result.context("install Ctrl-C handler")?;
-                info!("shutting down");
-                return node
-                    .shutdown()
-                    .await
-                    .map_err(|error| anyhow!("shut down embedded Zakura: {error}"));
-            }
+            _ = shutdown.cancelled() => return Ok(()),
             _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
         }
     }
@@ -163,19 +195,9 @@ async fn main() -> Result<()> {
     let mut historical = tokio::task::spawn_blocking(move || source.sync(&sync_index, pipeline));
     let state = tokio::select! {
         result = &mut historical => result.context("historical index task panicked")??,
-        result = &mut signal => {
-            result.context("install Ctrl-C handler")?;
+        _ = shutdown.cancelled() => {
             info!("waiting for the historical index writer before shutdown");
-            let outcome = historical
-                .await
-                .context("historical index task panicked")
-                .and_then(|result| result.map_err(Into::into));
-            let node_result = node
-                .shutdown()
-                .await
-                .map_err(|error| anyhow!("shut down embedded Zakura: {error}"));
-            outcome?;
-            node_result?;
+            historical.await.context("historical index task panicked")??;
             return Ok(());
         }
     };
@@ -185,37 +207,36 @@ async fn main() -> Result<()> {
         "historical compact index complete"
     );
 
-    if cli.index_only {
-        drop(client);
-        drop(p2p);
-        drop(index);
-        return node
-            .shutdown()
-            .await
-            .map_err(|error| anyhow!("shut down embedded Zakura: {error}"));
+    if cli.index_only || shutdown.is_cancelled() {
+        return Ok(());
     }
 
-    let compact =
-        CompactService::with_node(index, state, network.bip70_network_name(), client.clone())
-            .with_ping_enabled(cli.ping_very_insecure);
+    let compact = CompactService::with_node(index, state, chain_name, client.clone())
+        .with_ping_enabled(cli.ping_very_insecure);
     let mut startup_client = client.clone();
-    match compact.sync_head(&mut startup_client, pipeline).await {
-        Err(HeadSyncError::DeepReorg { .. }) => {
-            compact
-                .recover_deep_reorg(&mut startup_client, pipeline)
-                .await
+    let reconcile = async {
+        match compact.sync_head(&mut startup_client, pipeline).await {
+            Err(HeadSyncError::DeepReorg { .. }) => {
+                compact
+                    .recover_deep_reorg(&mut startup_client, pipeline)
+                    .await
+            }
+            result => result,
         }
-        result => result,
+        .context("reconcile compact index with Zakura's canonical head")
+    };
+    tokio::select! {
+        _ = shutdown.cancelled() => return Ok(()),
+        result = reconcile => { result?; }
     }
-    .context("reconcile compact index with Zakura's canonical head")?;
     p2p.install(compact.clone())
         .map_err(|error| anyhow!(error))?;
     drop(p2p);
 
-    let (shutdown, _) = watch::channel(false);
+    let (server_shutdown, _) = watch::channel(false);
     let mut follower = tokio::spawn({
         let compact = compact.clone();
-        let receiver = shutdown.subscribe();
+        let receiver = server_shutdown.subscribe();
         async move {
             compact
                 .follow_head(client, pipeline, HeadFollowerConfig::default(), receiver)
@@ -224,7 +245,7 @@ async fn main() -> Result<()> {
         }
     });
     let mut grpc = tokio::spawn({
-        let receiver = shutdown.subscribe();
+        let receiver = server_shutdown.subscribe();
         async move {
             info!(
                 address = %cli.grpc_listen,
@@ -239,43 +260,37 @@ async fn main() -> Result<()> {
         }
     });
 
-    let mut signal_result = None;
     let mut grpc_result = None;
     let mut follower_result = None;
     tokio::select! {
-        result = &mut signal => signal_result = Some(result),
+        _ = shutdown.cancelled() => {},
         result = &mut grpc => grpc_result = Some(result),
         result = &mut follower => follower_result = Some(result),
     }
-    let _ = shutdown.send(true);
+    let task_exited = grpc_result.is_some() || follower_result.is_some();
+    let _ = server_shutdown.send(true);
 
-    let outcome = async {
-        let signaled = signal_result.is_some();
-        if let Some(result) = signal_result {
-            result.context("install Ctrl-C handler")?;
-            info!("shutting down");
-        }
-        if grpc_result.is_none() {
-            grpc_result = Some(grpc.await);
-        }
-        if follower_result.is_none() {
-            follower_result = Some(follower.await);
-        }
-        task_result(grpc_result.unwrap(), "gRPC")?;
-        task_result(follower_result.unwrap(), "head follower")?;
-        if !signaled {
-            return Err(anyhow!("daemon task stopped unexpectedly"));
-        }
-        Ok(())
+    // Drain both tasks before inspecting either result, including on failure.
+    let (grpc_result, follower_result) = tokio::join!(
+        async {
+            match grpc_result {
+                Some(result) => result,
+                None => grpc.await,
+            }
+        },
+        async {
+            match follower_result {
+                Some(result) => result,
+                None => follower.await,
+            }
+        },
+    );
+    task_result(grpc_result, "gRPC")?;
+    task_result(follower_result, "head follower")?;
+    if task_exited {
+        return Err(anyhow!("daemon task stopped unexpectedly"));
     }
-    .await;
-
-    let node_result = node
-        .shutdown()
-        .await
-        .map_err(|error| anyhow!("shut down embedded Zakura: {error}"));
-    outcome?;
-    node_result
+    Ok(())
 }
 
 fn grpc_server(tls_cert: Option<&Path>, tls_key: Option<&Path>) -> Result<Server> {
