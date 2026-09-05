@@ -17,6 +17,7 @@ zakura-state = { workspace = true, features = ["indexer"] }
 zakurad.workspace = true
 ztreamer-indexer = { path = "../indexer" }
 ztreamer-protocol = { path = "../protocol" }
+ztreamer-node = { path = "../node" }
 
 [dev-dependencies]
 criterion = { version = "0.7", features = ["async_tokio"] }

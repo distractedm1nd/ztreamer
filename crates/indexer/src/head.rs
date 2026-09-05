@@ -5,7 +5,7 @@ use zakura_chain::{
     serialization::ZcashSerialize,
 };
 use zakura_state::MAX_BLOCK_REORG_HEIGHT;
-use zakurad::node::NodeClient;
+use ztreamer_node::NodeClient;
 
 use crate::{
     Digest,

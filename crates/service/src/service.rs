@@ -20,7 +20,7 @@ use zakura_chain::{
     transparent,
 };
 use zakura_state::{ReadRequest, ReadResponse, ReadStateService};
-use zakurad::node::NodeClient;
+use ztreamer_node::NodeClient;
 
 use crate::serve::{PoolSelection, compact_block, compact_block_nullifiers};
 use ztreamer_indexer::{

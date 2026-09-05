@@ -16,7 +16,7 @@ tonic = "0.14.6"
 tracing = "0.1"
 zakura-chain.workspace = true
 zakura-state = { workspace = true, features = ["indexer"] }
-zakurad.workspace = true
+ztreamer-node = { path = "../node" }
 
 [dev-dependencies]
 criterion = "0.7"
