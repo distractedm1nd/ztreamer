@@ -122,22 +122,22 @@ impl P2pCompactService {
             ),
             Message::GetBlockRequest => unary!(
                 proto::BlockId,
-                request => compact.block(request, false).await,
+                request => compact.encoded_block(request, false).await,
                 Message::GetBlockResponse
             ),
             Message::GetBlockNullifiersRequest => unary!(
                 proto::BlockId,
-                request => compact.block(request, true).await,
+                request => compact.encoded_block(request, true).await,
                 Message::GetBlockNullifiersResponse
             ),
             Message::GetBlockRangeRequest => stream!(
                 proto::BlockRange,
-                request => compact.range(request, false).await,
+                request => compact.encoded_range(request, false).await,
                 Message::GetBlockRangeResponse
             ),
             Message::GetBlockRangeNullifiersRequest => stream!(
                 proto::BlockRange,
-                request => compact.range(request, true).await,
+                request => compact.encoded_range(request, true).await,
                 Message::GetBlockRangeNullifiersResponse
             ),
             Message::GetTransactionRequest => unary!(

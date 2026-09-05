@@ -92,7 +92,7 @@ impl OrderedBuilder {
                 height: block.height,
             });
         }
-        let bytes = CompactBlockRecord::encoded_len_for_transactions(&block.transactions)?;
+        let bytes = CompactBlockRecord::encoded_size_bound(&block.transactions)?;
         let pending_bytes = self
             .pending_bytes
             .checked_add(bytes)
@@ -282,7 +282,7 @@ mod tests {
 
     #[test]
     fn ready_bytes_exclude_blocks_beyond_a_gap() {
-        let bytes = CompactBlockRecord::encoded_len_for_transactions(&[]).unwrap();
+        let bytes = CompactBlockRecord::encoded_size_bound(&[]).unwrap();
         let mut builder = OrderedBuilder::new(IndexState::default(), 1_000_000).unwrap();
 
         builder.push(prepared(1)).unwrap();
@@ -301,7 +301,7 @@ mod tests {
 
     #[test]
     fn sealable_ranges_stay_in_one_batch() {
-        let bytes = CompactBlockRecord::encoded_len_for_transactions(&[]).unwrap();
+        let bytes = CompactBlockRecord::encoded_size_bound(&[]).unwrap();
         let mut builder = OrderedBuilder::new(IndexState::default(), 1_000_000).unwrap();
         for height in 0..RANGE_SIZE / 2 {
             builder.push(prepared(height)).unwrap();

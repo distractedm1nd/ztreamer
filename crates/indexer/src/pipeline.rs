@@ -470,7 +470,7 @@ mod tests {
         for height in 0..3 {
             builder.push(prepared(height)).unwrap();
         }
-        let batch_bytes = CompactBlockRecord::encoded_len_for_transactions(&[]).unwrap();
+        let batch_bytes = CompactBlockRecord::encoded_size_bound(&[]).unwrap();
         let first = builder
             .build_batch(Some(20), Some(20), batch_bytes)
             .unwrap()

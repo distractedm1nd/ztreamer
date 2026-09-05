@@ -1,10 +1,6 @@
 //! Compact index record projection, shielded-pool filtering, and protobuf response construction.
 
 use tonic::Status;
-use ztreamer_indexer::{
-    codec::CompactBlockRecord,
-    parser::{CompactShieldedAction, CompactTransaction},
-};
 use ztreamer_protocol::proto;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -15,6 +11,10 @@ pub(crate) struct PoolSelection {
 }
 
 impl PoolSelection {
+    pub(crate) fn is_all(self) -> bool {
+        self.sapling && self.orchard && self.ironwood
+    }
+
     /// Validates a CompactTxStreamer pool request. Empty means every shielded pool.
     pub(crate) fn from_request(pool_types: &[i32]) -> Result<Self, Status> {
         if pool_types.is_empty() {
@@ -51,143 +51,52 @@ impl PoolSelection {
     }
 }
 
-pub(crate) fn compact_block(
-    record: &CompactBlockRecord,
+/// Project in place: discarded pools need no second record/object graph.
+pub(crate) fn project_block(
+    mut block: proto::CompactBlock,
     pools: PoolSelection,
+    nullifiers: bool,
 ) -> proto::CompactBlock {
-    convert_block(record, pools, false)
-}
-
-pub(crate) fn compact_block_nullifiers(
-    record: &CompactBlockRecord,
-    pools: PoolSelection,
-) -> proto::CompactBlock {
-    convert_block(record, pools, true)
-}
-
-fn convert_block(
-    record: &CompactBlockRecord,
-    pools: PoolSelection,
-    nullifiers_only: bool,
-) -> proto::CompactBlock {
-    let mut vtx = Vec::with_capacity(record.transactions.len());
-    for transaction in &record.transactions {
-        if let Some(transaction) = convert_transaction(transaction, pools, nullifiers_only) {
-            vtx.push(transaction);
+    for tx in &mut block.vtx {
+        if !pools.sapling {
+            tx.spends.clear();
+        }
+        if !pools.sapling || nullifiers {
+            tx.outputs.clear();
+        }
+        if !pools.orchard {
+            tx.actions.clear();
+        }
+        if !pools.ironwood {
+            tx.ironwood_actions.clear();
+        }
+        if nullifiers {
+            for action in tx.actions.iter_mut().chain(&mut tx.ironwood_actions) {
+                action.cmx.clear();
+                action.ephemeral_key.clear();
+                action.ciphertext.clear();
+            }
         }
     }
-
-    proto::CompactBlock {
-        height: u64::from(record.height),
-        hash: record.hash.to_vec(),
-        prev_hash: record.previous_hash.to_vec(),
-        time: record.time,
-        // CompactTxStreamer has historically left this field unset.
-        header: Vec::new(),
-        vtx,
-        chain_metadata: Some(if nullifiers_only {
-            proto::ChainMetadata::default()
-        } else {
-            proto::ChainMetadata {
-                sapling_commitment_tree_size: record.end_tree_sizes.sapling,
-                orchard_commitment_tree_size: record.end_tree_sizes.orchard,
-                ironwood_commitment_tree_size: record.end_tree_sizes.ironwood,
-            }
-        }),
+    if nullifiers {
+        block.chain_metadata = Some(proto::ChainMetadata::default());
+    } else {
+        block.vtx.retain(|tx| {
+            !tx.spends.is_empty()
+                || !tx.outputs.is_empty()
+                || !tx.actions.is_empty()
+                || !tx.ironwood_actions.is_empty()
+        });
     }
-}
-
-fn convert_transaction(
-    transaction: &CompactTransaction,
-    pools: PoolSelection,
-    nullifiers_only: bool,
-) -> Option<proto::CompactTx> {
-    let spends = if pools.sapling {
-        transaction
-            .sapling_spends
-            .iter()
-            .map(|nullifier| proto::CompactSaplingSpend {
-                nf: nullifier.to_vec(),
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
-    let outputs = if pools.sapling && !nullifiers_only {
-        transaction
-            .sapling_outputs
-            .iter()
-            .map(|output| proto::CompactSaplingOutput {
-                cmu: output.cmu.to_vec(),
-                ephemeral_key: output.ephemeral_key.to_vec(),
-                ciphertext: output.ciphertext.to_vec(),
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
-    let actions = if pools.orchard {
-        convert_actions(&transaction.orchard_actions, nullifiers_only)
-    } else {
-        Vec::new()
-    };
-    let ironwood_actions = if pools.ironwood {
-        convert_actions(&transaction.ironwood_actions, nullifiers_only)
-    } else {
-        Vec::new()
-    };
-
-    (!spends.is_empty()
-        || !outputs.is_empty()
-        || !actions.is_empty()
-        || !ironwood_actions.is_empty()
-        || nullifiers_only)
-        .then(|| proto::CompactTx {
-            index: transaction.index,
-            txid: transaction.txid.to_vec(),
-            fee: 0,
-            spends,
-            outputs,
-            actions,
-            ironwood_actions,
-            vin: Vec::new(),
-            vout: Vec::new(),
-        })
-}
-
-fn convert_actions(
-    actions: &[CompactShieldedAction],
-    nullifiers_only: bool,
-) -> Vec<proto::CompactOrchardAction> {
-    actions
-        .iter()
-        .map(|action| proto::CompactOrchardAction {
-            nullifier: action.nullifier.to_vec(),
-            cmx: if nullifiers_only {
-                Vec::new()
-            } else {
-                action.commitment.to_vec()
-            },
-            ephemeral_key: if nullifiers_only {
-                Vec::new()
-            } else {
-                action.ephemeral_key.to_vec()
-            },
-            ciphertext: if nullifiers_only {
-                Vec::new()
-            } else {
-                action.ciphertext.to_vec()
-            },
-        })
-        .collect()
+    block
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use ztreamer_indexer::{
-        codec::TreeSizes,
-        parser::{CompactSaplingOutput, CompactShieldedAction},
+        codec::{CompactBlockRecord, TreeSizes},
+        parser::{CompactSaplingOutput, CompactShieldedAction, CompactTransaction},
     };
 
     #[test]
@@ -216,9 +125,10 @@ mod tests {
             },
         };
 
-        let orchard = compact_block(
-            &record,
+        let orchard = project_block(
+            record.to_proto(),
             PoolSelection::from_request(&[proto::PoolType::Orchard as i32]).unwrap(),
+            false,
         );
         assert!(orchard.header.is_empty());
         assert!(orchard.vtx[0].spends.is_empty());
@@ -232,8 +142,11 @@ mod tests {
             15
         );
 
-        let nullifiers =
-            compact_block_nullifiers(&record, PoolSelection::from_request(&[]).unwrap());
+        let nullifiers = project_block(
+            record.to_proto(),
+            PoolSelection::from_request(&[]).unwrap(),
+            true,
+        );
         assert_eq!(nullifiers.vtx[0].spends[0].nf, vec![7; 32]);
         assert!(nullifiers.vtx[0].outputs.is_empty());
         assert!(nullifiers.vtx[0].actions[0].cmx.is_empty());

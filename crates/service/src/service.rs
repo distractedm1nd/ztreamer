@@ -7,8 +7,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-use tokio::sync::{Semaphore, mpsc, watch};
-use tokio_stream::{Stream, wrappers::ReceiverStream};
+use tokio::sync::{mpsc, watch};
+use tokio_stream::{Stream, StreamExt, wrappers::ReceiverStream};
 use tonic::Status;
 use tower::ServiceExt;
 use zakura_chain::{
@@ -22,18 +22,17 @@ use zakura_chain::{
 use zakura_state::{ReadRequest, ReadResponse, ReadStateService};
 use ztreamer_node::NodeClient;
 
-use crate::serve::{PoolSelection, compact_block, compact_block_nullifiers};
+use crate::serve::{PoolSelection, project_block};
 use ztreamer_indexer::{
     Digest,
-    codec::CompactBlockRecord,
+    codec::{CompactBlockRecord, EncodedBlockRecord, ProtobufBlockRecord, StoredBlock},
     head::{CanonicalBlockSource, HeadSyncError, recover_deep_reorg},
     index::{BlockId, Index, IndexError, IndexState},
     pipeline::PipelineConfig,
 };
-use ztreamer_protocol::proto;
+use ztreamer_protocol::{EncodedCompactBlock, proto};
 
 pub(crate) type RpcStream<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Send>>;
-const MAX_RANGE_READERS: usize = 16;
 const MAX_UTXO_ADDRESSES: usize = 1_000;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -148,7 +147,6 @@ pub struct CompactService {
     chain_name: Arc<str>,
     zakura: ReadStateService,
     node: Option<NodeClient>,
-    range_readers: Arc<Semaphore>,
     ping_enabled: bool,
 }
 
@@ -167,7 +165,6 @@ impl CompactService {
             chain_name,
             zakura,
             node: None,
-            range_readers: Arc::new(Semaphore::new(MAX_RANGE_READERS)),
             ping_enabled: false,
         }
     }
@@ -333,6 +330,13 @@ impl CompactService {
     }
 
     async fn record(&self, request: proto::BlockId) -> Result<CompactBlockRecord, Status> {
+        self.record_as(request).await
+    }
+
+    async fn record_as<T: StoredBlock + Send + 'static>(
+        &self,
+        request: proto::BlockId,
+    ) -> Result<T, Status> {
         let snapshot = self.snapshot();
         ensure_ready(&snapshot)?;
         if request.hash.is_empty() {
@@ -340,7 +344,7 @@ impl CompactService {
                 .map_err(|_| Status::invalid_argument("block height exceeds u32"))?;
             if let Some(record) = snapshot.volatile(height) {
                 ensure_tip_ready(&snapshot)?;
-                return Ok(record.clone());
+                return Ok(T::from_record(record));
             }
         } else {
             let hash: Digest = request
@@ -354,7 +358,7 @@ impl CompactService {
                 .find(|record| record.hash == hash)
             {
                 ensure_tip_ready(&snapshot)?;
-                return Ok(record.clone());
+                return Ok(T::from_record(record));
             }
         }
         let index = Arc::clone(&self.index);
@@ -362,13 +366,13 @@ impl CompactService {
         let lookup = if request.hash.is_empty() {
             let height = u32::try_from(request.height)
                 .map_err(|_| Status::invalid_argument("block height exceeds u32"))?;
-            tokio::task::spawn_blocking(move || index.read_block(generation, height).map(Some))
+            tokio::task::spawn_blocking(move || index.read_block_as(generation, height).map(Some))
         } else {
             let hash: Digest = request
                 .hash
                 .try_into()
                 .map_err(|_| Status::invalid_argument("block hash must be 32 bytes"))?;
-            tokio::task::spawn_blocking(move || index.read_block_by_hash(generation, hash))
+            tokio::task::spawn_blocking(move || index.read_block_by_hash_as(generation, hash))
         };
         lookup
             .await
@@ -382,13 +386,38 @@ impl CompactService {
         request: proto::BlockId,
         nullifiers: bool,
     ) -> Result<proto::CompactBlock, Status> {
-        let record = self.record(request).await?;
+        let record = self.record_as::<ProtobufBlockRecord>(request).await?;
         let pools = PoolSelection::from_request(&[]).expect("empty pool selection is valid");
-        Ok(if nullifiers {
-            compact_block_nullifiers(&record, pools)
+        Ok(project_block(record.0, pools, nullifiers))
+    }
+
+    pub(crate) async fn encoded_block(
+        &self,
+        request: proto::BlockId,
+        nullifiers: bool,
+    ) -> Result<EncodedCompactBlock, Status> {
+        if nullifiers {
+            return self.block(request, true).await.map(Into::into);
+        }
+        Ok(self.record_as::<EncodedBlockRecord>(request).await?.block)
+    }
+
+    pub(crate) async fn encoded_range(
+        &self,
+        request: proto::BlockRange,
+        nullifiers: bool,
+    ) -> Result<RpcStream<EncodedCompactBlock>, Status> {
+        let pools = PoolSelection::from_request(&request.pool_types)?;
+        if !nullifiers && pools.is_all() {
+            self.range_as(request, |record: EncodedBlockRecord| record.block)
+                .await
         } else {
-            compact_block(&record, pools)
-        })
+            Ok(Box::pin(
+                self.range(request, nullifiers)
+                    .await?
+                    .map(|block| block.map(Into::into)),
+            ))
+        }
     }
 
     pub(crate) async fn range(
@@ -396,8 +425,19 @@ impl CompactService {
         request: proto::BlockRange,
         nullifiers: bool,
     ) -> Result<RpcStream<proto::CompactBlock>, Status> {
-        let (start, end) = range_heights(&request)?;
         let pools = PoolSelection::from_request(&request.pool_types)?;
+        self.range_as(request, move |record: ProtobufBlockRecord| {
+            project_block(record.0, pools, nullifiers)
+        })
+        .await
+    }
+
+    async fn range_as<T: StoredBlock + Send + 'static, B: Send + 'static>(
+        &self,
+        request: proto::BlockRange,
+        project: impl Fn(T) -> B + Send + 'static,
+    ) -> Result<RpcStream<B>, Status> {
+        let (start, end) = range_heights(&request)?;
         let snapshot = self.snapshot();
         ensure_ready(&snapshot)?;
         let visible_tip = snapshot
@@ -417,25 +457,20 @@ impl CompactService {
             return Err(Status::unavailable("canonical head source is stale"));
         }
         let index = Arc::clone(&self.index);
-        let permit = Arc::clone(&self.range_readers)
-            .acquire_owned()
-            .await
-            .map_err(|_| Status::unavailable("range reader pool is closed"))?;
         let ascending = start <= end;
         let durable_tip = snapshot.durable_tip.map(|tip| tip.height);
         let mut cursor = Some(start);
-        let mut records = Vec::<CompactBlockRecord>::new().into_iter();
+        // Each stream retains at most one prepared chunk. The LMDB transaction ends
+        // inside read_range_latest_as, before transport backpressure can suspend
+        // the stream. A slow client must not occupy a global database-reader slot.
+        let mut records = Vec::<T>::new().into_iter();
         // (hash, previous_hash) of the last record sent; every chunk must chain onto it.
         let mut last: Option<(Digest, Digest)> = None;
         Ok(Box::pin(tokio_stream::iter(std::iter::from_fn(
             move || loop {
                 if let Some(record) = records.next() {
-                    last = Some((record.hash, record.previous_hash));
-                    return Some(Ok(if nullifiers {
-                        compact_block_nullifiers(&record, pools)
-                    } else {
-                        compact_block(&record, pools)
-                    }));
+                    last = Some((record.hash(), record.previous_hash()));
+                    return Some(Ok(project(record)));
                 }
                 let height = cursor?;
                 let mut chunk_end = if ascending {
@@ -453,7 +488,7 @@ impl CompactService {
                 }
                 let mut chunk = Vec::with_capacity(64);
                 let result = if durable {
-                    index.read_range_latest(height, chunk_end, |record| {
+                    index.read_range_latest_as(height, chunk_end, |record| {
                         chunk.push(record);
                         true
                     })
@@ -464,12 +499,11 @@ impl CompactService {
                         } else {
                             height - offset
                         };
-                        chunk.push(
+                        chunk.push(T::from_record(
                             snapshot
                                 .volatile(height)
-                                .ok_or(IndexError::Coverage { height })?
-                                .clone(),
-                        );
+                                .ok_or(IndexError::Coverage { height })?,
+                        ));
                         Ok(())
                     })
                 };
@@ -485,13 +519,13 @@ impl CompactService {
                     && let Some(first) = chunk.first()
                 {
                     let continuous = if ascending {
-                        first.previous_hash == last_hash
+                        first.previous_hash() == last_hash
                     } else {
-                        last_previous == first.hash
+                        last_previous == first.hash()
                     };
                     if !continuous {
                         cursor = None;
-                        return Some(Err(reorganized(first.height)));
+                        return Some(Err(reorganized(first.height())));
                     }
                 }
                 cursor = (chunk_end != end).then_some(if ascending {
@@ -500,7 +534,6 @@ impl CompactService {
                     chunk_end - 1
                 });
                 records = chunk.into_iter();
-                let _ = &permit;
             },
         ))))
     }
@@ -1417,10 +1450,10 @@ mod tests {
                 let service = CompactService::new(Arc::clone(&index), state, "main", read_service);
 
                 let mut stream = service
-                    .get_block_range(Request::new(range(0, 200)))
+                    .encoded_range(range(0, 200), false)
                     .await
                     .unwrap()
-                    .into_inner();
+                    .map(|block| block.map(|block| block.into_decoded().unwrap()));
                 assert_eq!(stream.next().await.unwrap().unwrap().height, 0);
 
                 // A durable advance lands under the stream.
@@ -1466,10 +1499,10 @@ mod tests {
                 let service = CompactService::new(Arc::clone(&index), state, "main", read_service);
 
                 let mut stream = service
-                    .get_block_range(Request::new(range(0, 200)))
+                    .encoded_range(range(0, 200), false)
                     .await
                     .unwrap()
-                    .into_inner();
+                    .map(|block| block.map(|block| block.into_decoded().unwrap()));
                 assert_eq!(stream.next().await.unwrap().unwrap().height, 0);
 
                 // A competing chain replaces everything above 30; the next chunk cannot link onto 63.
@@ -1543,10 +1576,10 @@ mod tests {
 
                 // The first chunk is volatile, the rest is durable and read after an advance.
                 let mut stream = service
-                    .get_block_range(Request::new(range(202, 100)))
+                    .encoded_range(range(202, 100), false)
                     .await
                     .unwrap()
-                    .into_inner();
+                    .map(|block| block.map(|block| block.into_decoded().unwrap()));
                 assert_eq!(stream.next().await.unwrap().unwrap().height, 202);
                 let mut builder = OrderedBuilder::new(state, 1024 * 1024).unwrap();
                 for height in 201..=205 {

@@ -11,10 +11,8 @@ use tonic::transport::{Channel, Server};
 use zakura_chain::{block, parameters::Network};
 use zakura_state::Config;
 use ztreamer_indexer::index::Index;
-use ztreamer_protocol::proto::{
-    self, compact_tx_streamer_client::CompactTxStreamerClient,
-    compact_tx_streamer_server::CompactTxStreamerServer,
-};
+use ztreamer_protocol::proto::{self, compact_tx_streamer_client::CompactTxStreamerClient};
+use ztreamer_protocol::wire::compact_tx_streamer_server::CompactTxStreamerServer;
 use ztreamer_service::CompactService;
 
 #[path = "../../../../benchmarks/fixtures.rs"]

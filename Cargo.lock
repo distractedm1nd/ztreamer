@@ -7949,6 +7949,7 @@ dependencies = [
  "heed",
  "hex",
  "metrics",
+ "prost",
  "serde",
  "serde-big-array",
  "tempfile",
@@ -7960,6 +7961,7 @@ dependencies = [
  "zakura-state",
  "zakura-test",
  "ztreamer-node",
+ "ztreamer-protocol",
 ]
 
 [[package]]

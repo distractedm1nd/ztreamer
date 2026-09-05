@@ -6,6 +6,7 @@ pub mod index;
 pub mod ingest;
 pub mod parser;
 pub mod pipeline;
+mod protobuf;
 pub mod source;
 
 pub type Digest = [u8; 32];
