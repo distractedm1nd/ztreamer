@@ -20,11 +20,19 @@ ztreamer-protocol = { path = "../protocol" }
 ztreamer-node = { path = "../node" }
 
 [dev-dependencies]
+clap = { version = "4.5", features = ["derive"] }
 criterion = { version = "0.7", features = ["async_tokio"] }
+hdrhistogram = { version = "7.6", default-features = false }
+serde_json = "1"
 tempfile = "3"
-tokio = { version = "1", features = ["rt-multi-thread"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net"] }
+tokio-stream = { version = "0.1", features = ["net"] }
 zakura-test.workspace = true
 
 [[bench]]
 name = "serve"
+harness = false
+
+[[bench]]
+name = "grpc"
 harness = false

@@ -46,8 +46,13 @@ jobs:
       - name: Bench
         run: |
           set -euo pipefail
+          python3 scripts/benchmark-metadata.py . target/benchmark-provenance
           benches() {
-            cargo bench --locked --bench parser --bench codec --bench serve -- --noplot "$@"
+            local targets=(--bench parser --bench codec --bench serve)
+            if [[ -f crates/service/benches/grpc.rs ]]; then
+              targets+=(--bench grpc)
+            fi
+            cargo bench --locked "${targets[@]}" -- --noplot "$@"
           }
           if [[ ${{ github.event_name }} != pull_request ]]; then
             benches
@@ -60,13 +65,17 @@ jobs:
           fi
           rm -rf target/criterion
           head=$(git rev-parse HEAD)
+          trap 'git checkout --quiet "$head"' EXIT
           git checkout --quiet "${{ github.event.pull_request.base.sha }}"
           benches --save-baseline base
           git checkout --quiet "$head"
+          trap - EXIT
           benches --baseline-lenient base | tee bench-pr.txt
           BASE_SHA="${{ github.event.pull_request.base.sha }}" python3 <<'PY' | tee bench-comment.md >> "$GITHUB_STEP_SUMMARY"
           import os
           import re
+          import json
+          from pathlib import Path
 
           ansi = re.compile(r"\x1b\[[0-9;]*m")
           entries = []
@@ -141,12 +150,34 @@ jobs:
           print()
           table("Regressions", regressions)
           table("Improvements", improvements)
+          unpaired = []
+          for path in Path("target/criterion").glob("**/new/benchmark.json"):
+              if not (path.parent.parent / "base" / "estimates.json").exists():
+                  unpaired.append(json.loads(path.read_text())["full_id"])
+          if unpaired:
+              print("### New benchmarks (no baseline)")
+              print()
+              for name in sorted(unpaired):
+                  print(f"- `{name}`")
+              print()
           if quiet:
               print(f"<details><summary>Within noise / no change ({len(quiet)})</summary>")
               print()
               table("Within noise / no change", quiet)
               print("</details>")
           PY
+      - name: Storage benchmark smoke test
+        run: cargo bench --locked --bench index -- --test
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: benchmark-results
+          path: |
+            target/criterion
+            target/benchmark-provenance
+            bench-pr.txt
+            bench-comment.md
+          retention-days: 30
       - uses: marocchino/sticky-pull-request-comment@v2
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && hashFiles('bench-comment.md') != ''
         with:

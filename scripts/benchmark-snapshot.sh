@@ -66,6 +66,7 @@ configure_macos_cxx_headers() {
 [[ -d "$snapshot" ]] || { echo "snapshot cache is not a directory: $snapshot" >&2; exit 1; }
 [[ -f "$config" ]] || { echo "Zakura config does not exist: $config" >&2; exit 1; }
 command -v curl >/dev/null || { echo "curl is required" >&2; exit 1; }
+python3 -c 'import tomllib'
 session_cmd=()
 if command -v setsid >/dev/null; then
     session_cmd=(setsid)
@@ -84,7 +85,9 @@ echo "Using Zakura state in place at $snapshot (Zakura will update it)"
 
 echo "Building ztreamerd"
 configure_macos_cxx_headers
-CARGO_PROFILE_RELEASE_DEBUG=1 cargo build --manifest-path "$repo/Cargo.toml" --release -p ztreamerd
+CARGO_PROFILE_RELEASE_DEBUG=1 cargo build --locked --manifest-path "$repo/Cargo.toml" --release -p ztreamerd
+cp "$config" "$run/zakura-input.toml"
+CARGO_PROFILE_RELEASE_DEBUG=1 python3 "$repo/scripts/benchmark-metadata.py" "$repo" "$run/provenance"
 
 command=(
     "$repo/target/release/ztreamerd"
@@ -99,7 +102,7 @@ command=(
     --index-only
 )
 if [[ ${PERF:-0} == 1 ]]; then
-    command=(perf record -F 999 -g --call-graph dwarf -o "$run/perf.data" -- "${command[@]}")
+    command=(perf record -F "${PERF_FREQ:-99}" -g --call-graph dwarf -o "$run/perf.data" -- "${command[@]}")
 fi
 timer=()
 if [[ -x /usr/bin/time ]] && /usr/bin/time -v true >/dev/null 2>&1; then
@@ -114,8 +117,9 @@ fi
     echo "config=$config"
     echo "ztreamer_commit=$(git -C "$repo" rev-parse HEAD)"
     echo "ztreamer_dirty_files=$(git -C "$repo" status --porcelain | wc -l)"
-    echo "zakura_commit=$(git -C "$repo/../zakura" rev-parse HEAD)"
-    echo "zakura_dirty_files=$(git -C "$repo/../zakura" status --porcelain | wc -l)"
+    echo "cache_state=${CACHE_STATE:-unspecified}"
+    echo "snapshot_id=${SNAPSHOT_ID:-unspecified}"
+    echo "timing=process startup through historical indexing and shutdown; excludes build; does not start gRPC"
     echo "logical_cpus=$(logical_cpus)"
     echo "kernel=$(kernel_info)"
     printf 'command='; printf '%q ' "${command[@]}"; echo
@@ -150,7 +154,7 @@ if [[ $platform == Darwin ]]; then
     (
         echo "unix_time,pid,vmsize_kb,vmrss_kb,utime,time,state"
         while kill -0 "$pid" 2>/dev/null; do
-            process=$(pgrep -nx ztreamerd || true)
+            process=$(pgrep -g "$pid" -x ztreamerd || true)
             if [[ -n $process ]]; then
                 ps -p "$process" -o pid=,vsz=,rss=,utime=,time=,state= 2>/dev/null |
                     awk -v now="$(unix_now)" '{$1=$1; gsub(/[[:space:]]+/, ","); print now "," $0; fflush();}'
@@ -163,12 +167,13 @@ else
     vmstat -n 1 > "$run/vmstat.txt" &
     vmstat_pid=$!
     device=$(findmnt -no SOURCE --target "$snapshot")
-    device=$(lsblk -no PKNAME "$device" | head -1)
+    parent_device=$(lsblk -no PKNAME "$device" 2>/dev/null | head -1)
+    device=${parent_device:-${device##*/}}
     (
         echo "unix_time stats"
         while kill -0 "$pid" 2>/dev/null; do
             printf '%s ' "$(unix_now)"
-            cat "/sys/class/block/$device/stat"
+            cat "/sys/class/block/$device/stat" 2>/dev/null || true
             sleep 1
         done
     ) > "$run/diskstats.txt" &
@@ -176,7 +181,7 @@ else
     (
         echo "unix_time,pid,rchar,wchar,read_bytes,write_bytes,minflt,majflt,utime,stime,vmsize_kb,vmrss_kb,vmswap_kb,threads"
         while kill -0 "$pid" 2>/dev/null; do
-            process=$(pgrep -nx ztreamerd || true)
+            process=$(pgrep -g "$pid" -x ztreamerd || true)
             if [[ -n $process && -r /proc/$process/io ]]; then
                 read -r rchar wchar read_bytes write_bytes < <(
                     awk '/^(rchar|wchar|read_bytes|write_bytes):/ { printf "%s ", $2 }' "/proc/$process/io"
@@ -208,7 +213,7 @@ trap cleanup INT TERM EXIT
 echo "unix_time,metric,value" > "$run/metrics.csv"
 while kill -0 "$pid" 2>/dev/null; do
     now=$(unix_now)
-    curl -fsS "http://$metrics/metrics" 2>/dev/null |
+    curl -fsS --max-time 2 "http://$metrics/metrics" 2>/dev/null |
         awk -v now="$now" '
             /^(ztreamer_index_|state_finalized_block_height|sync_estimated_)/ && $1 !~ /^#/ {
                 print now "," $1 "," $2

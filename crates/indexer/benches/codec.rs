@@ -1,6 +1,9 @@
 // Disabled due to warnings in criterion macros
 #![allow(missing_docs)]
 
+#[path = "../../../benchmarks/fixtures.rs"]
+mod fixtures;
+
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use zakura_chain::{block::Block, serialization::ZcashDeserialize as _};
 use zakura_test::vectors::BLOCK_MAINNET_1687121_BYTES;
@@ -49,6 +52,7 @@ fn block_codec(c: &mut Criterion) {
     let records = [
         ("empty", record(0, Vec::new())),
         ("shielded", record(0, shielded_transactions())),
+        ("mixed-heavy-v1", fixtures::mixed_records(10).pop().unwrap()),
     ];
 
     let mut group = c.benchmark_group("encode");
@@ -90,6 +94,27 @@ fn range_codec(c: &mut Criterion) {
     });
 }
 
+fn mixed_range_codec(c: &mut Criterion) {
+    let records = fixtures::mixed_records(RANGE_SIZE);
+    let encoded = encode_range(&records).unwrap();
+    for index in [0, 500, 999] {
+        assert_eq!(
+            decode_range_record(&encoded, index).unwrap(),
+            records[index]
+        );
+    }
+    let mut group = c.benchmark_group("range_codec_mixed_v1");
+    group.throughput(Throughput::Bytes(encoded.len() as u64));
+    group.bench_function("encode", |b| b.iter(|| encode_range(&records).unwrap()));
+    for index in [0, 500, 999] {
+        group.throughput(Throughput::Elements(1));
+        group.bench_with_input(BenchmarkId::new("decode", index), &index, |b, &index| {
+            b.iter(|| decode_range_record(&encoded, index).unwrap())
+        });
+    }
+    group.finish();
+}
+
 fn criterion_config() -> Criterion {
     Criterion::default().noise_threshold(0.05).sample_size(50)
 }
@@ -97,6 +122,6 @@ fn criterion_config() -> Criterion {
 criterion_group! {
     name = benches;
     config = criterion_config();
-    targets = block_codec, range_codec
+    targets = block_codec, range_codec, mixed_range_codec
 }
 criterion_main!(benches);

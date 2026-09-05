@@ -7988,9 +7988,12 @@ dependencies = [
 name = "ztreamer-service"
 version = "0.0.1"
 dependencies = [
+ "clap",
  "criterion",
+ "hdrhistogram",
  "hex",
  "prost",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",

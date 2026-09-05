@@ -1,7 +1,9 @@
 // Disabled due to warnings in criterion macros
 #![allow(missing_docs)]
 
-use std::sync::Arc;
+use std::{hint::black_box, sync::Arc};
+
+mod support;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use tokio_stream::StreamExt as _;
@@ -109,6 +111,25 @@ fn get_block_range(c: &mut Criterion) {
                 end: block_id(end),
                 pool_types: Vec::new(),
             };
+            runtime.block_on(async {
+                let mut stream = service
+                    .get_block_range(Request::new(range.clone()))
+                    .await
+                    .unwrap()
+                    .into_inner();
+                let mut count = 0;
+                while let Some(block) = stream.next().await {
+                    let block = block.unwrap();
+                    let expected = if start <= end {
+                        start + count
+                    } else {
+                        start - count
+                    };
+                    assert_eq!(block.height, u64::from(expected));
+                    count += 1;
+                }
+                assert_eq!(count, blocks);
+            });
             group.bench_with_input(BenchmarkId::new(direction, blocks), &range, |b, range| {
                 b.to_async(&runtime).iter(|| async {
                     let mut stream = service
@@ -117,11 +138,87 @@ fn get_block_range(c: &mut Criterion) {
                         .unwrap()
                         .into_inner();
                     while let Some(block) = stream.next().await {
-                        block.unwrap();
+                        black_box(block.unwrap());
                     }
                 })
             });
         }
+    }
+    group.finish();
+}
+
+fn mixed_ranges(c: &mut Criterion) {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .enable_all()
+        .build()
+        .unwrap();
+    let fixture = runtime.block_on(support::Fixture::new());
+    let mut group = c.benchmark_group("range_paths_mixed_v1");
+    for (name, start, end, nullifiers, pools) in [
+        ("sealed", 100, 199, false, vec![]),
+        ("mutable", 2_000, 2_099, false, vec![]),
+        ("volatile", 2_200, 2_209, false, vec![]),
+        ("sealed-boundary", 950, 1_049, false, vec![]),
+        ("sealed-mutable", 1_950, 2_049, false, vec![]),
+        ("durable-volatile", 2_150, 2_209, false, vec![]),
+        ("volatile-durable", 2_209, 2_150, false, vec![]),
+        ("nullifiers", 100, 199, true, vec![]),
+        (
+            "orchard-only",
+            100,
+            199,
+            false,
+            vec![proto::PoolType::Orchard as i32],
+        ),
+    ] {
+        let mut request = support::range(start, end);
+        request.pool_types = pools;
+        let service = &fixture.service;
+        let run = || async {
+            let response = if nullifiers {
+                service
+                    .get_block_range_nullifiers(Request::new(request.clone()))
+                    .await
+            } else {
+                service.get_block_range(Request::new(request.clone())).await
+            }
+            .unwrap();
+            let mut stream = response.into_inner();
+            let mut count = 0;
+            while let Some(block) = stream.next().await {
+                let block = block.unwrap();
+                let expected = if start <= end {
+                    start + count
+                } else {
+                    start - count
+                };
+                assert_eq!(block.height, u64::from(expected));
+                black_box(block);
+                count += 1;
+            }
+            assert_eq!(count, start.abs_diff(end) + 1);
+        };
+        runtime.block_on(run());
+        group.throughput(Throughput::Elements(u64::from(start.abs_diff(end) + 1)));
+        group.bench_function(name, |b| b.to_async(&runtime).iter(run));
+    }
+    group.finish();
+    let mut group = c.benchmark_group("get_block_mixed_v1");
+    group.throughput(Throughput::Elements(1));
+    for (name, height) in [("sealed", 199), ("mutable", 2_099), ("volatile", 2_209)] {
+        group.bench_function(name, |b| {
+            b.to_async(&runtime).iter(|| async {
+                let block = fixture
+                    .service
+                    .get_block(Request::new(block_id(height).unwrap()))
+                    .await
+                    .unwrap()
+                    .into_inner();
+                assert_eq!(block.height, u64::from(height));
+                black_box(block)
+            })
+        });
     }
     group.finish();
 }
@@ -133,6 +230,6 @@ fn criterion_config() -> Criterion {
 criterion_group! {
     name = benches;
     config = criterion_config();
-    targets = get_block_range
+    targets = get_block_range, mixed_ranges
 }
 criterion_main!(benches);

@@ -21,6 +21,7 @@ zaino_metrics=${ZAINO_METRICS:-127.0.0.1:19998}
 
 [[ -d "$snapshot" ]] || { echo "Zakura cache is not a directory: $snapshot" >&2; exit 1; }
 command -v curl >/dev/null || { echo "curl is required" >&2; exit 1; }
+python3 -c 'import tomllib'
 session_cmd=()
 if command -v setsid >/dev/null; then
     session_cmd=(setsid)
@@ -83,14 +84,23 @@ EOF
 
 echo "Building zakurad and zainod"
 CARGO_PROFILE_RELEASE_DEBUG=1 cargo build \
-    --manifest-path "$zakura_repo/Cargo.toml" --release -p zakura --bin zakurad \
+    --locked --manifest-path "$zakura_repo/Cargo.toml" --release -p zakura --bin zakurad \
     --no-default-features --features prometheus,indexer
 CARGO_PROFILE_RELEASE_DEBUG=1 cargo build \
-    --manifest-path "$zaino_repo/Cargo.toml" --release -p zainod --features prometheus
+    --locked --manifest-path "$zaino_repo/Cargo.toml" --release -p zainod --features prometheus
+CARGO_PROFILE_RELEASE_DEBUG=1 python3 "$repo/scripts/benchmark-metadata.py" "$zakura_repo" "$run/zakura-provenance"
+CARGO_PROFILE_RELEASE_DEBUG=1 python3 "$repo/scripts/benchmark-metadata.py" "$zaino_repo" "$run/zaino-provenance"
 
 zakurad="$zakura_repo/target/release/zakurad"
 zainod="$zaino_repo/target/release/zainod"
 
+started_seconds=$SECONDS
+{
+    echo "started_utc=$(date -u --iso-8601=seconds)"
+    echo "cache_state=${CACHE_STATE:-unspecified}"
+    echo "snapshot_id=${SNAPSHOT_ID:-unspecified}"
+    echo "timing=backend startup through indexing and shutdown; excludes builds"
+} > "$run/metadata.txt"
 "${session_cmd[@]}" "$zakurad" -c "$run/zakura.toml" start > "$run/zakurad.log" 2>&1 &
 zakura_pid=$!
 zaino_group=
@@ -131,17 +141,17 @@ if [[ ${PERF:-0} == 1 ]]; then
 fi
 
 {
-    echo "started_utc=$(date -u --iso-8601=seconds)"
+    echo "index_started_utc=$(date -u --iso-8601=seconds)"
     echo "snapshot=$snapshot"
     echo "zaino_commit=$(git -C "$zaino_repo" rev-parse HEAD)"
     echo "zaino_dirty_files=$(git -C "$zaino_repo" status --porcelain | wc -l)"
     echo "zakura_commit=$(git -C "$zakura_repo" rev-parse HEAD)"
     echo "zakura_dirty_files=$(git -C "$zakura_repo" status --porcelain | wc -l)"
     printf 'command='; printf '%q ' "${command[@]}"; echo
-} > "$run/metadata.txt"
+} >> "$run/metadata.txt"
 
 echo "Running Zaino RPC benchmark; artifacts: $run"
-started_seconds=$SECONDS
+index_started_seconds=$SECONDS
 "${session_cmd[@]}" "${command[@]}" > >(tee "$run/zainod.log") 2>&1 &
 zaino_group=$!
 
@@ -166,6 +176,8 @@ while kill -0 "$zaino_group" 2>/dev/null; do
         END { exit !(target > 0 && db >= target) }
     ' <<< "$scrape"; then
         reached_tip=1
+        echo "index_to_tip_seconds=$((SECONDS - index_started_seconds))" >> "$run/metadata.txt"
+        awk '$1 == "zaino_db_tip_height" || $1 == "zaino_sync_target_height" { print $1 "=" $2 }' <<< "$scrape" >> "$run/metadata.txt"
         echo "reached_tip_utc=$(date -u --iso-8601=seconds)" >> "$run/metadata.txt"
         kill -INT "$zaino_pid"
         break

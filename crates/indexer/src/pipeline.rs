@@ -200,6 +200,9 @@ impl<'a> HistoricalPipeline<'a> {
             }
             let (state, write_stats) = writer.join().map_err(|_| PipelineError::Panic)??;
             info!(
+                start_height = start,
+                target_height = target,
+                target_hash = %tip_hash,
                 fetch_read_seconds = worker_stats.read.as_secs_f64(),
                 fetch_header_read_seconds = worker_stats.header_read.as_secs_f64(),
                 fetch_transaction_read_seconds = worker_stats.transaction_read.as_secs_f64(),
