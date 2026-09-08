@@ -883,7 +883,7 @@ impl CompactService {
         &self,
         request: proto::GetMempoolTxRequest,
     ) -> Result<RpcStream<proto::CompactTx>, Status> {
-        PoolSelection::from_request(&request.pool_types)?;
+        PoolSelection::from_mempool_request(&request.pool_types)?;
         let node = self.node()?.clone();
         let transactions = Self::mempool_transactions(node).await?;
         let compact = mempool_compact(transactions, &request)?;
@@ -1074,7 +1074,7 @@ fn mempool_compact(
     transactions: Vec<transaction::UnminedTx>,
     request: &proto::GetMempoolTxRequest,
 ) -> Result<Vec<proto::CompactTx>, Status> {
-    let pools = PoolSelection::from_request(&request.pool_types)?;
+    let pools = PoolSelection::from_mempool_request(&request.pool_types)?;
     let transactions = transactions
         .into_iter()
         .map(|transaction| {
@@ -1401,7 +1401,7 @@ mod tests {
                     .err()
                     .unwrap()
                     .code(),
-                    tonic::Code::InvalidArgument
+                    tonic::Code::Unavailable
                 );
                 assert_eq!(
                     CompactTxStreamer::get_mempool_tx(
@@ -1690,10 +1690,12 @@ mod tests {
             pool_types: vec![proto::PoolType::Transparent as i32],
             ..Default::default()
         };
-        assert_eq!(
-            mempool_compact(mempool, &transparent).unwrap_err().code(),
-            tonic::Code::InvalidArgument
-        );
+        let compact = mempool_compact(mempool, &transparent).unwrap();
+        assert!(!compact.is_empty());
+        assert!(compact.iter().all(|tx| tx.spends.is_empty()
+            && tx.outputs.is_empty()
+            && tx.actions.is_empty()
+            && tx.ironwood_actions.is_empty()));
     }
 
     fn shielded_mempool_transaction(

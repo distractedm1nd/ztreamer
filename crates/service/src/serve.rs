@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 
 use tonic::Status;
-use zakura_chain::transaction;
+use zakura_chain::{serialization::ZcashDeserialize as _, transaction};
 use ztreamer_indexer::{
     Digest,
     parser::{CompactShieldedAction, CompactTransaction, parse_transaction},
@@ -12,6 +12,7 @@ use ztreamer_protocol::proto;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PoolSelection {
+    transparent: bool,
     sapling: bool,
     orchard: bool,
     ironwood: bool,
@@ -22,10 +23,22 @@ impl PoolSelection {
         self.sapling && self.orchard && self.ironwood
     }
 
-    /// Validates a CompactTxStreamer pool request. Empty means every shielded pool.
+    /// Validates a block request, whose stored data only includes shielded pools.
     pub(crate) fn from_request(pool_types: &[i32]) -> Result<Self, Status> {
+        let selection = Self::from_mempool_request(pool_types)?;
+        if selection.transparent {
+            return Err(Status::invalid_argument(
+                "transparent compact data is not supported",
+            ));
+        }
+        Ok(selection)
+    }
+
+    /// Empty means every shielded pool, for compatibility with legacy clients.
+    pub(crate) fn from_mempool_request(pool_types: &[i32]) -> Result<Self, Status> {
         if pool_types.is_empty() {
             return Ok(Self {
+                transparent: false,
                 sapling: true,
                 orchard: true,
                 ironwood: true,
@@ -33,6 +46,7 @@ impl PoolSelection {
         }
 
         let mut selection = Self {
+            transparent: false,
             sapling: false,
             orchard: false,
             ironwood: false,
@@ -42,11 +56,7 @@ impl PoolSelection {
                 Ok(proto::PoolType::Sapling) => selection.sapling = true,
                 Ok(proto::PoolType::Orchard) => selection.orchard = true,
                 Ok(proto::PoolType::Ironwood) => selection.ironwood = true,
-                Ok(proto::PoolType::Transparent) => {
-                    return Err(Status::invalid_argument(
-                        "transparent compact data is not supported",
-                    ));
-                }
+                Ok(proto::PoolType::Transparent) => selection.transparent = true,
                 Ok(proto::PoolType::Invalid) | Err(_) => {
                     return Err(Status::invalid_argument(format!(
                         "invalid pool type {pool_type}"
@@ -112,7 +122,35 @@ pub(crate) fn compact_mempool_txs(
         let transaction = parse_transaction(bytes, *txid, 0).map_err(|error| {
             Status::internal(format!("mempool transaction {txid} is unparsable: {error}"))
         })?;
-        if let Some(transaction) = convert_transaction(&transaction, pools, false) {
+        let mut compact_tx = convert_transaction(&transaction, pools, false);
+        if pools.transparent {
+            let transaction = transaction::Transaction::zcash_deserialize(bytes.as_slice())
+                .map_err(|error| Status::internal(error.to_string()))?;
+            let vin: Vec<_> = transaction
+                .spent_outpoints()
+                .map(|outpoint| proto::CompactTxIn {
+                    prevout_txid: outpoint.hash.0.to_vec(),
+                    prevout_index: outpoint.index,
+                })
+                .collect();
+            let vout: Vec<_> = transaction
+                .outputs()
+                .iter()
+                .map(|output| proto::TxOut {
+                    value: output.value.into(),
+                    script_pub_key: output.lock_script.as_raw_bytes().to_vec(),
+                })
+                .collect();
+            if !vin.is_empty() || !vout.is_empty() {
+                let compact_tx = compact_tx.get_or_insert_with(|| proto::CompactTx {
+                    txid: txid.0.to_vec(),
+                    ..Default::default()
+                });
+                compact_tx.vin = vin;
+                compact_tx.vout = vout;
+            }
+        }
+        if let Some(transaction) = compact_tx {
             compact.push(transaction);
         }
     }
@@ -224,9 +262,7 @@ fn convert_actions(
 mod tests {
     use super::*;
     use zakura_chain::{
-        block::Block,
-        serialization::{ZcashDeserialize as _, ZcashSerialize as _},
-        transaction::Transaction,
+        block::Block, serialization::ZcashSerialize as _, transaction::Transaction,
     };
     use zakura_test::vectors::{BLOCK_MAINNET_949496_BYTES, BLOCK_TESTNET_1842421_BYTES};
     use ztreamer_indexer::{
@@ -417,6 +453,72 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn mempool_transparent_fields_are_opt_in_and_preserve_wire_values() {
+        use zakura_chain::transparent;
+
+        let prevout = (0..32).collect::<Vec<u8>>();
+        let transparent = Transaction::V1 {
+            inputs: vec![transparent::Input::PrevOut {
+                outpoint: transparent::OutPoint {
+                    hash: transaction::Hash(prevout.clone().try_into().unwrap()),
+                    index: 7,
+                },
+                unlock_script: transparent::Script::new(&[]),
+                sequence: u32::MAX,
+            }],
+            outputs: vec![transparent::Output {
+                value: 123_u64.try_into().unwrap(),
+                lock_script: transparent::Script::new(&[0x51]),
+            }],
+            lock_time: transaction::LockTime::unlocked(),
+        };
+        let orchard = shielded_transaction(&BLOCK_TESTNET_1842421_BYTES, |tx| {
+            tx.orchard_actions().next().is_some()
+        });
+        let entries = [entry(&transparent), entry(&orchard)];
+        let legacy = compact_mempool_txs(&entries, all_pools(), &[]).unwrap();
+        assert_eq!(legacy.len(), 1);
+        assert!(legacy[0].vin.is_empty() && legacy[0].vout.is_empty());
+
+        for types in [
+            vec![proto::PoolType::Transparent as i32],
+            vec![
+                proto::PoolType::Transparent as i32,
+                proto::PoolType::Orchard as i32,
+            ],
+        ] {
+            let pools = PoolSelection::from_mempool_request(&types).unwrap();
+            let compact = compact_mempool_txs(&entries, pools, &[]).unwrap();
+            assert_eq!(
+                compact[0],
+                proto::CompactTx {
+                    txid: transparent.hash().0.to_vec(),
+                    vin: vec![proto::CompactTxIn {
+                        prevout_txid: prevout.clone(),
+                        prevout_index: 7
+                    }],
+                    vout: vec![proto::TxOut {
+                        value: 123,
+                        script_pub_key: vec![0x51]
+                    }],
+                    ..Default::default()
+                }
+            );
+            assert!(compact.iter().all(|tx| tx.spends.is_empty()
+                && tx.outputs.is_empty()
+                && tx.ironwood_actions.is_empty()));
+            if types.len() == 1 {
+                assert!(compact.iter().all(|tx| tx.actions.is_empty()));
+            } else {
+                assert_eq!(compact[1].actions, legacy[0].actions);
+            }
+        }
+        for invalid in [0, 99] {
+            assert!(PoolSelection::from_mempool_request(&[invalid]).is_err());
+        }
     }
 
     #[test]
