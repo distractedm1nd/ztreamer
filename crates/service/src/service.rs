@@ -22,7 +22,7 @@ use zakura_chain::{
 use zakura_state::{ReadRequest, ReadResponse, ReadStateService};
 use ztreamer_node::NodeClient;
 
-use crate::serve::{PoolSelection, compact_mempool_txs, project_block};
+use crate::serve::{PoolSelection, compact_mempool_txs, excluded_txids, project_block};
 use ztreamer_indexer::{
     Digest,
     codec::{CompactBlockRecord, EncodedBlockRecord, ProtobufBlockRecord, StoredBlock},
@@ -886,7 +886,9 @@ impl CompactService {
         PoolSelection::from_mempool_request(&request.pool_types)?;
         let node = self.node()?.clone();
         let transactions = Self::mempool_transactions(node).await?;
-        let compact = mempool_compact(transactions, &request)?;
+        let compact = tokio::task::spawn_blocking(move || mempool_compact(transactions, &request))
+            .await
+            .map_err(|error| Status::internal(format!("mempool conversion failed: {error}")))??;
         Ok(Box::pin(tokio_stream::iter(compact.into_iter().map(Ok))))
     }
 
@@ -1075,8 +1077,13 @@ fn mempool_compact(
     request: &proto::GetMempoolTxRequest,
 ) -> Result<Vec<proto::CompactTx>, Status> {
     let pools = PoolSelection::from_mempool_request(&request.pool_types)?;
+    let excluded = excluded_txids(
+        transactions.iter().map(|tx| tx.id().mined_id().0),
+        &request.exclude_txid_suffixes,
+    );
     let transactions = transactions
         .into_iter()
+        .filter(|tx| !excluded.contains(&tx.id().mined_id().0))
         .map(|transaction| {
             transaction
                 .transaction()
@@ -1085,7 +1092,7 @@ fn mempool_compact(
                 .map_err(|error| Status::internal(error.to_string()))
         })
         .collect::<Result<Vec<_>, Status>>()?;
-    compact_mempool_txs(&transactions, pools, &request.exclude_txid_suffixes)
+    compact_mempool_txs(&transactions, pools, &[])
 }
 
 fn range_heights(request: &proto::BlockRange) -> Result<(u32, u32), Status> {

@@ -113,7 +113,10 @@ pub(crate) fn compact_mempool_txs(
     pools: PoolSelection,
     exclude_txid_suffixes: &[Vec<u8>],
 ) -> Result<Vec<proto::CompactTx>, Status> {
-    let excluded = excluded_txids(transactions, exclude_txid_suffixes);
+    let excluded = excluded_txids(
+        transactions.iter().map(|(_, txid)| txid.0),
+        exclude_txid_suffixes,
+    );
     let mut compact = Vec::with_capacity(transactions.len().saturating_sub(excluded.len()));
     for (bytes, txid) in transactions {
         if excluded.contains(&txid.0) {
@@ -157,17 +160,33 @@ pub(crate) fn compact_mempool_txs(
     Ok(compact)
 }
 
-fn excluded_txids(
-    transactions: &[(Vec<u8>, transaction::Hash)],
+pub(crate) fn excluded_txids(
+    txids: impl Iterator<Item = Digest>,
     suffixes: &[Vec<u8>],
 ) -> HashSet<Digest> {
     let mut excluded = HashSet::new();
-    for suffix in suffixes {
-        let mut matches = transactions
-            .iter()
-            .filter(|(_, txid)| txid.0.ends_with(suffix));
-        if let (Some((_, txid)), None) = (matches.next(), matches.next()) {
-            excluded.insert(txid.0);
+    if suffixes.is_empty() {
+        return excluded;
+    }
+    // Reversing turns suffix matches into contiguous prefix matches in sorted order.
+    let mut reversed: Vec<_> = txids
+        .map(|mut txid| {
+            txid.reverse();
+            txid
+        })
+        .collect();
+    reversed.sort_unstable();
+    for suffix in suffixes.iter().filter(|suffix| suffix.len() <= 32) {
+        let prefix: Vec<_> = suffix.iter().rev().copied().collect();
+        let start = reversed.partition_point(|txid| txid.as_slice() < prefix.as_slice());
+        if let Some(txid) = reversed.get(start).filter(|txid| txid.starts_with(&prefix))
+            && !reversed
+                .get(start + 1)
+                .is_some_and(|next| next.starts_with(&prefix))
+        {
+            let mut txid = *txid;
+            txid.reverse();
+            excluded.insert(txid);
         }
     }
     excluded
@@ -565,6 +584,41 @@ mod tests {
             ),
             [vec![2; 32]]
         );
+    }
+
+    #[test]
+    fn suffix_lookup_handles_every_length_and_mempool_boundary() {
+        let txids: Vec<Digest> = (0..8)
+            .map(|i| {
+                let mut txid = std::array::from_fn(|j| i + j as u8);
+                txid[31] = i % 2;
+                txid
+            })
+            .collect();
+        for count in 0..=txids.len() {
+            for txid in &txids {
+                for len in 0..=32 {
+                    let suffix = txid[32 - len..].to_vec();
+                    let matches: Vec<_> = txids[..count]
+                        .iter()
+                        .filter(|id| id.ends_with(&suffix))
+                        .copied()
+                        .collect();
+                    let expected = if matches.len() == 1 {
+                        HashSet::from([matches[0]])
+                    } else {
+                        HashSet::new()
+                    };
+                    assert_eq!(
+                        excluded_txids(
+                            txids[..count].iter().rev().copied(),
+                            &[suffix.clone(), suffix, vec![0xff], vec![0; 33]]
+                        ),
+                        expected
+                    );
+                }
+            }
+        }
     }
 
     #[test]
