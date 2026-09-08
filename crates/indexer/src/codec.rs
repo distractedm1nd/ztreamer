@@ -1,6 +1,5 @@
 //! Versioned codecs for individual compact blocks and random-access 1,000-block ranges.
 
-use bincode::Options;
 use prost::{Message, bytes::Bytes};
 use serde::{Deserialize, Serialize};
 use ztreamer_protocol::{EncodedCompactBlock, compact_bytes, proto};
@@ -8,11 +7,9 @@ use ztreamer_protocol::{EncodedCompactBlock, compact_bytes, proto};
 use crate::{Digest, index::RANGE_SIZE, parser::CompactTransaction};
 
 const BLOCK_FORMAT_VERSION: u8 = 1;
-const PROTOBUF_BLOCK_VERSION: u8 = 2;
 const RANGE_FORMAT_VERSION: u8 = 1;
 const MAX_RECORD_BYTES: usize = 2_000_000;
 
-const RECORD_FIXED_BYTES: usize = 1 + 5 * size_of::<u32>() + 2 * size_of::<Digest>();
 const PROTOBUF_ENVELOPE_BYTES: usize = 1 + 2 * size_of::<u32>() + 2 * size_of::<Digest>();
 
 /// Owned record views: no LMDB transaction or mapped slice escapes a read call.
@@ -37,9 +34,6 @@ pub struct ProtobufBlockRecord(pub proto::CompactBlock);
 
 impl StoredBlock for ProtobufBlockRecord {
     fn decode(bytes: &[u8]) -> Result<Self, CodecError> {
-        if bytes.first() != Some(&PROTOBUF_BLOCK_VERSION) {
-            return CompactBlockRecord::decode(bytes).map(|record| Self::from_record(&record));
-        }
         let (height, hash, previous_hash, payload) = protobuf_envelope(bytes)?;
         let block = proto::CompactBlock::decode(payload).map_err(|_| CodecError::InvalidRecord)?;
         if block.height != u64::from(height)
@@ -72,9 +66,6 @@ impl StoredBlock for ProtobufBlockRecord {
 
 impl StoredBlock for EncodedBlockRecord {
     fn decode(bytes: &[u8]) -> Result<Self, CodecError> {
-        if bytes.first() != Some(&PROTOBUF_BLOCK_VERSION) {
-            return CompactBlockRecord::decode(bytes).map(|record| Self::from_record(&record));
-        }
         let (height, hash, previous_hash, payload) = protobuf_envelope(bytes)?;
         Ok(Self {
             height,
@@ -174,18 +165,14 @@ impl CompactBlockRecord {
     }
 
     fn encode_into(&self, bytes: &mut Vec<u8>) -> Result<(), CodecError> {
-        // Parser records contain shielded transactions only. Preserve arbitrary
-        // caller-supplied empty transactions losslessly in the legacy format:
-        // full responses omit them, but nullifier responses retain them.
+        // Compact index transactions must contain shielded data, as emitted by the parser.
         if self.transactions.iter().any(|tx| {
             tx.sapling_spends.is_empty()
                 && tx.sapling_outputs.is_empty()
                 && tx.orchard_actions.is_empty()
                 && tx.ironwood_actions.is_empty()
         }) {
-            return record_options()
-                .serialize_into(bytes, &(BLOCK_FORMAT_VERSION, self))
-                .map_err(|_| CodecError::Length);
+            return Err(CodecError::InvalidRecord);
         }
         let block = self.to_proto();
         let len = block.encoded_len();
@@ -196,7 +183,7 @@ impl CompactBlockRecord {
             return Err(CodecError::Length);
         }
         bytes.reserve(PROTOBUF_ENVELOPE_BYTES + len);
-        bytes.push(PROTOBUF_BLOCK_VERSION);
+        bytes.push(BLOCK_FORMAT_VERSION);
         put_u32(bytes, self.height);
         bytes.extend_from_slice(&self.hash);
         bytes.extend_from_slice(&self.previous_hash);
@@ -207,50 +194,32 @@ impl CompactBlockRecord {
     pub(crate) fn encoded_size_bound(
         transactions: &[CompactTransaction],
     ) -> Result<usize, CodecError> {
-        let legacy = record_options()
-            .serialized_size(transactions)
+        // Conservative protobuf sizes, including tags/lengths and maximum varints.
+        // u128 keeps count arithmetic safe before enforcing the record limit.
+        let size = 192
+            + transactions
+                .iter()
+                .map(|tx| {
+                    64 + 36 * tx.sapling_spends.len() as u128
+                        + 128 * tx.sapling_outputs.len() as u128
+                        + 160 * tx.orchard_actions.len() as u128
+                        + 160 * tx.ironwood_actions.len() as u128
+                })
+                .sum::<u128>();
+        usize::try_from(size)
             .ok()
-            .and_then(|len| usize::try_from(len).ok())
-            .and_then(|len| RECORD_FIXED_BYTES.checked_add(len))
-            .filter(|len| *len <= MAX_RECORD_BYTES)
-            .ok_or(CodecError::Length)?;
-        // Bound the protobuf expansion without constructing a response just to
-        // budget it. Every shielded element is >=32 bytes; protobuf framing adds
-        // <25% per element. 128 bytes cover the extra envelope/header fields.
-        // The encoder still enforces MAX_RECORD_BYTES on the actual result.
-        legacy
-            .checked_add(legacy / 4)
-            .and_then(|len| len.checked_add(128))
+            .filter(|size| *size <= MAX_RECORD_BYTES)
             .ok_or(CodecError::Length)
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, CodecError> {
-        if bytes.len() > MAX_RECORD_BYTES {
-            return Err(CodecError::Length);
-        }
-        if bytes.first() == Some(&PROTOBUF_BLOCK_VERSION) {
-            let (height, hash, previous_hash, payload) = protobuf_envelope(bytes)?;
-            // Prost's Bytes fields slice this single owned buffer instead of
-            // allocating a Vec for every 32/52-byte cryptographic field.
-            let block = compact_bytes::CompactBlock::decode(Bytes::copy_from_slice(payload))
-                .map_err(|_| CodecError::InvalidRecord)?;
-            let record = Self::from_proto(block)?;
-            if record.height != height
-                || record.hash != hash
-                || record.previous_hash != previous_hash
-            {
-                return Err(CodecError::InvalidRecord);
-            }
-            return Ok(record);
-        }
-        let (version, record) = record_options()
-            .deserialize::<(u8, Self)>(bytes)
+        let (height, hash, previous_hash, payload) = protobuf_envelope(bytes)?;
+        // Bytes fields share this owned buffer while decoding.
+        let block = compact_bytes::CompactBlock::decode(Bytes::copy_from_slice(payload))
             .map_err(|_| CodecError::InvalidRecord)?;
-        if version != BLOCK_FORMAT_VERSION {
-            return Err(CodecError::Version {
-                kind: "block",
-                version,
-            });
+        let record = Self::from_proto(block)?;
+        if record.height != height || record.hash != hash || record.previous_hash != previous_hash {
+            return Err(CodecError::InvalidRecord);
         }
         Ok(record)
     }
@@ -261,7 +230,7 @@ fn protobuf_envelope(bytes: &[u8]) -> Result<(u32, Digest, Digest, &[u8]), Codec
         return Err(CodecError::Length);
     }
     let mut reader = Reader::new(bytes);
-    if reader.u8()? != PROTOBUF_BLOCK_VERSION {
+    if reader.u8()? != BLOCK_FORMAT_VERSION {
         return Err(CodecError::InvalidRecord);
     }
     let height = reader.u32()?;
@@ -271,14 +240,6 @@ fn protobuf_envelope(bytes: &[u8]) -> Result<(u32, Digest, Digest, &[u8]), Codec
     let payload = reader.take(len)?;
     reader.finish().map_err(|_| CodecError::InvalidRecord)?;
     Ok((height, hash, previous_hash, payload))
-}
-
-fn record_options() -> impl Options {
-    bincode::DefaultOptions::new()
-        .with_fixint_encoding()
-        .with_big_endian()
-        .with_limit(MAX_RECORD_BYTES as u64)
-        .reject_trailing_bytes()
 }
 
 pub fn encode_range(records: &[CompactBlockRecord]) -> Result<Vec<u8>, CodecError> {
@@ -394,17 +355,6 @@ impl<'a> RangeDecoder<'a> {
     }
 
     pub(crate) fn record_as<T: StoredBlock>(&self, index: usize) -> Result<T, CodecError> {
-        let record = T::decode(self.record_bytes(index)?)?;
-        if self.start.checked_add(index as u32) != Some(record.height())
-            || (index == 0 && record.previous_hash() != self.first_previous_hash)
-            || (index + 1 == RANGE_SIZE as usize && record.hash() != self.terminal_hash)
-        {
-            return Err(CodecError::InvalidRange);
-        }
-        Ok(record)
-    }
-
-    fn record_bytes(&self, index: usize) -> Result<&'a [u8], CodecError> {
         if index >= RANGE_SIZE as usize {
             return Err(CodecError::RangeIndex);
         }
@@ -414,18 +364,15 @@ impl<'a> RangeDecoder<'a> {
             .ok_or(CodecError::Length)?;
         let mut envelope = Reader::new(envelope);
         let record_len = envelope.len()?;
-        let record = envelope.take(record_len)?;
+        let record = T::decode(envelope.take(record_len)?)?;
         envelope.finish()?;
-        Ok(record)
-    }
-
-    pub(crate) fn needs_upgrade(&self) -> Result<bool, CodecError> {
-        for index in 0..RANGE_SIZE as usize {
-            if !is_protobuf_record(self.record_bytes(index)?) {
-                return Ok(true);
-            }
+        if self.start.checked_add(index as u32) != Some(record.height())
+            || (index == 0 && record.previous_hash() != self.first_previous_hash)
+            || (index + 1 == RANGE_SIZE as usize && record.hash() != self.terminal_hash)
+        {
+            return Err(CodecError::InvalidRange);
         }
-        Ok(false)
+        Ok(record)
     }
 
     fn offset(&self, index: usize) -> usize {
@@ -436,10 +383,6 @@ impl<'a> RangeDecoder<'a> {
                 .expect("offset table width was checked"),
         ) as usize
     }
-}
-
-pub(crate) fn is_protobuf_record(bytes: &[u8]) -> bool {
-    bytes.first() == Some(&PROTOBUF_BLOCK_VERSION)
 }
 
 fn put_u32(bytes: &mut Vec<u8>, value: u32) {
@@ -510,6 +453,26 @@ mod tests {
     use crate::parser::{CompactSaplingOutput, CompactShieldedAction};
 
     #[test]
+    fn rejects_transactions_without_shielded_data() {
+        let record = CompactBlockRecord {
+            height: 0,
+            hash: [0; 32],
+            previous_hash: [0; 32],
+            time: 0,
+            end_tree_sizes: TreeSizes::default(),
+            transactions: vec![CompactTransaction {
+                index: 0,
+                txid: [0; 32],
+                sapling_spends: vec![],
+                sapling_outputs: vec![],
+                orchard_actions: vec![],
+                ironwood_actions: vec![],
+            }],
+        };
+        assert_eq!(record.encode(), Err(CodecError::InvalidRecord));
+    }
+
+    #[test]
     fn size_bound_covers_header_extremes_and_large_single_pool_transactions() {
         for count in [0, 1, 127, 128, 1024] {
             for pool in 0..4 {
@@ -549,7 +512,7 @@ mod tests {
                     hash: [0; 32],
                     previous_hash: [0; 32],
                     time: u32::MAX,
-                    transactions: vec![tx],
+                    transactions: if count == 0 { vec![] } else { vec![tx] },
                     end_tree_sizes: TreeSizes {
                         sapling: u32::MAX,
                         orchard: u32::MAX,
@@ -592,19 +555,6 @@ mod tests {
                 ironwood: 1,
             },
         };
-        // The previous on-disk format remains readable and projects identically.
-        let legacy = record_options()
-            .serialize(&(BLOCK_FORMAT_VERSION, &first))
-            .unwrap();
-        assert_eq!(CompactBlockRecord::decode(&legacy).unwrap(), first);
-        assert_eq!(
-            EncodedBlockRecord::decode(&legacy)
-                .unwrap()
-                .block
-                .into_decoded()
-                .unwrap(),
-            first.to_proto()
-        );
         let encoded_first = first.encode().unwrap();
         assert_eq!(
             EncodedBlockRecord::decode(&encoded_first)
@@ -653,16 +603,6 @@ mod tests {
                 end_tree_sizes: TreeSizes::default(),
             });
         }
-        // A mixed range can contain a lossless v1 fallback alongside v2 records.
-        records[537].transactions.push(CompactTransaction {
-            index: 4,
-            txid: [9; 32],
-            sapling_spends: vec![],
-            sapling_outputs: vec![],
-            orchard_actions: vec![],
-            ironwood_actions: vec![],
-        });
-        assert_eq!(records[537].encode().unwrap()[0], BLOCK_FORMAT_VERSION);
         let encoded = encode_range(&records).unwrap();
         let range = RangeDecoder::new(&encoded).unwrap();
         for (index, expected) in records.iter().enumerate() {
@@ -671,10 +611,7 @@ mod tests {
             assert_eq!(encoded.hash, expected.hash);
             assert_eq!(encoded.previous_hash, expected.previous_hash);
             let actual = encoded.block.into_decoded().unwrap();
-            let mut expected = expected.to_proto();
-            if index == 537 {
-                expected.vtx.clear();
-            }
+            let expected = expected.to_proto();
             assert_eq!(actual, expected);
         }
         assert_eq!(decode_range_record(&encoded, 0).unwrap(), records[0]);

@@ -82,10 +82,6 @@ struct Cli {
     /// Exit after historical indexing instead of starting servers and the head follower.
     #[arg(long)]
     index_only: bool,
-
-    /// Upgrade legacy compact-index records and exit, without starting Zakura.
-    #[arg(long, conflicts_with = "index_only")]
-    upgrade_index: bool,
 }
 
 #[tokio::main]
@@ -103,6 +99,7 @@ async fn main() -> Result<()> {
     let mut config =
         ZakuradConfig::load(cli.zakura_config.clone()).context("load Zakura configuration")?;
     config.metrics.endpoint_addr = Some(cli.metrics_listen);
+    let _metrics = MetricsEndpoint::new(&config.metrics).context("start Prometheus endpoint")?;
     let network = config.network.network.clone();
     let index = Arc::new(Index::open(
         &cli.index_dir,
@@ -110,13 +107,6 @@ async fn main() -> Result<()> {
         &network.to_string(),
         network.genesis_hash().0,
     )?);
-
-    if cli.upgrade_index {
-        let rewritten = index.upgrade_records().context("upgrade compact index")?;
-        info!(rewritten, "compact index upgrade complete");
-        return Ok(());
-    }
-    let _metrics = MetricsEndpoint::new(&config.metrics).context("start Prometheus endpoint")?;
 
     let p2p = Arc::new(P2pCompactService::pending());
     info!(network = %network, "starting embedded Zakura");

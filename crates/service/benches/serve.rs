@@ -7,7 +7,6 @@ mod support;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use tokio_stream::StreamExt as _;
-use tonic::Request;
 use zakura_chain::{block, parameters::Network, serialization::ZcashDeserialize as _};
 use zakura_state::Config;
 use zakura_test::vectors::BLOCK_MAINNET_1687121_BYTES;
@@ -17,7 +16,7 @@ use ztreamer_indexer::{
     ingest::OrderedBuilder,
     parser::{CompactTransaction, ParsedCompactBlock, RawIndexBlock, parse_block},
 };
-use ztreamer_protocol::proto::{self, compact_tx_streamer_server::CompactTxStreamer};
+use ztreamer_protocol::proto;
 use ztreamer_service::CompactService;
 
 const TIP: u32 = 2_005;
@@ -112,11 +111,7 @@ fn get_block_range(c: &mut Criterion) {
                 pool_types: Vec::new(),
             };
             runtime.block_on(async {
-                let mut stream = service
-                    .get_block_range(Request::new(range.clone()))
-                    .await
-                    .unwrap()
-                    .into_inner();
+                let mut stream = service.range(range.clone(), false).await.unwrap();
                 let mut count = 0;
                 while let Some(block) = stream.next().await {
                     let block = block.unwrap();
@@ -132,11 +127,7 @@ fn get_block_range(c: &mut Criterion) {
             });
             group.bench_with_input(BenchmarkId::new(direction, blocks), &range, |b, range| {
                 b.to_async(&runtime).iter(|| async {
-                    let mut stream = service
-                        .get_block_range(Request::new(range.clone()))
-                        .await
-                        .unwrap()
-                        .into_inner();
+                    let mut stream = service.range(range.clone(), false).await.unwrap();
                     while let Some(block) = stream.next().await {
                         black_box(block.unwrap());
                     }
@@ -176,15 +167,7 @@ fn mixed_ranges(c: &mut Criterion) {
         request.pool_types = pools;
         let service = &fixture.service;
         let run = || async {
-            let response = if nullifiers {
-                service
-                    .get_block_range_nullifiers(Request::new(request.clone()))
-                    .await
-            } else {
-                service.get_block_range(Request::new(request.clone())).await
-            }
-            .unwrap();
-            let mut stream = response.into_inner();
+            let mut stream = service.range(request.clone(), nullifiers).await.unwrap();
             let mut count = 0;
             while let Some(block) = stream.next().await {
                 let block = block.unwrap();
@@ -211,10 +194,9 @@ fn mixed_ranges(c: &mut Criterion) {
             b.to_async(&runtime).iter(|| async {
                 let block = fixture
                     .service
-                    .get_block(Request::new(block_id(height).unwrap()))
+                    .block(block_id(height).unwrap(), false)
                     .await
-                    .unwrap()
-                    .into_inner();
+                    .unwrap();
                 assert_eq!(block.height, u64::from(height));
                 black_box(block)
             })

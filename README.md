@@ -29,25 +29,6 @@ ztreamerd --zakura-config zakura.toml \
 
 Certificate changes require a restart. The Prometheus listener is not covered by these options and should remain private or be secured by a reverse proxy.
 
-### Compact-index format
-
-New compact records store the ordinary shielded protobuf response, so full-block
-requests can send it without rebuilding every transaction and byte field. Existing
-v1 records remain readable. To convert existing history, stop the daemon and run:
-
-```console
-ztreamerd --zakura-config zakura.toml --index-dir ztreamer-index --upgrade-index
-```
-
-This rewrites the compact index and exits without starting Zakura or network
-listeners. It preserves chain state and commits each range or row independently;
-an interrupted conversion can be resumed with the same command. Allow free disk
-space for LMDB's copy-on-write pages. Older binaries cannot read the new records,
-so retain a backup if you need to downgrade. The Zakura database is unchanged.
-
-See the [serving comparison](benchmarks/serving-optimization.md) for measured gains,
-tradeoffs, and the saved baseline.
-
 ## Protocol compatibility
 
 All `lightwallet-protocol` methods are implemented except `GetMempoolTx`. We intentionally deviate `lightwallet-protocol` for two other requests:

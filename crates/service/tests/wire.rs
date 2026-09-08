@@ -2,8 +2,7 @@
 
 use prost::Message;
 use tokio_stream::StreamExt;
-use tonic::Request;
-use ztreamer_protocol::proto::{self, compact_tx_streamer_server::CompactTxStreamer};
+use ztreamer_protocol::proto;
 
 #[path = "../benches/support/mod.rs"]
 mod support;
@@ -41,19 +40,11 @@ async fn wire_server_preserves_blocks_filters_and_boundaries() {
             for nullifiers in [false, true] {
                 let mut request = support::range(start, end);
                 request.pool_types = pools.clone();
-                let mut expected = if nullifiers {
-                    reference
-                        .service
-                        .get_block_range_nullifiers(Request::new(request.clone()))
-                        .await
-                } else {
-                    reference
-                        .service
-                        .get_block_range(Request::new(request.clone()))
-                        .await
-                }
-                .unwrap()
-                .into_inner();
+                let mut expected = reference
+                    .service
+                    .range(request.clone(), nullifiers)
+                    .await
+                    .unwrap();
                 let mut actual = if nullifiers {
                     client.get_block_range_nullifiers(request).await
                 } else {
@@ -82,10 +73,9 @@ async fn wire_server_preserves_blocks_filters_and_boundaries() {
             };
             let expected = reference
                 .service
-                .get_block(Request::new(request.clone()))
+                .block(request.clone(), false)
                 .await
-                .unwrap()
-                .into_inner();
+                .unwrap();
             assert_eq!(
                 client
                     .get_block(request.clone())
@@ -96,10 +86,9 @@ async fn wire_server_preserves_blocks_filters_and_boundaries() {
             );
             let expected = reference
                 .service
-                .get_block_nullifiers(Request::new(request.clone()))
+                .block(request.clone(), true)
                 .await
-                .unwrap()
-                .into_inner();
+                .unwrap();
             assert_eq!(
                 client
                     .get_block_nullifiers(request)

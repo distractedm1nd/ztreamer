@@ -168,60 +168,6 @@ impl Index {
         read_state(self.metadata, &txn)
     }
 
-    /// Rewrites legacy payloads without changing chain state or generations.
-    /// Run offline. Each sealed range or mutable row commits independently, so an
-    /// interrupted upgrade can be resumed; existing readers see complete records.
-    /// Returns the number of rewritten LMDB values (ranges plus individual rows).
-    pub fn upgrade_records(&self) -> Result<u64, IndexError> {
-        let state = self.state()?;
-        let Some(tip) = state.durable_tip() else {
-            return Ok(0);
-        };
-        let mut rewritten = 0;
-        if let Some(sealed) = state.sealed_through() {
-            for start in (0..=sealed).step_by(RANGE_SIZE as usize) {
-                let mut txn = self.env.write_txn()?;
-                let old = self
-                    .sealed_ranges
-                    .get(&txn, &start)?
-                    .ok_or(IndexError::Coverage { height: start })?;
-                let decoder = RangeDecoder::new(old)?;
-                if !decoder.needs_upgrade()? {
-                    continue;
-                }
-                let records = (0..RANGE_SIZE as usize)
-                    .map(|index| decoder.record(index))
-                    .collect::<Result<Vec<_>, _>>()?;
-                let new = encode_range(&records)?;
-                if new != old {
-                    self.sealed_ranges.put(&mut txn, &start, &new)?;
-                    txn.commit()?;
-                    rewritten += 1;
-                }
-            }
-        }
-        let start = state
-            .sealed_through()
-            .map_or(0, |height| height.saturating_add(1));
-        for height in start..=tip.height {
-            let mut txn = self.env.write_txn()?;
-            let old = self
-                .mutable_blocks
-                .get(&txn, &height)?
-                .ok_or(IndexError::Coverage { height })?;
-            if crate::codec::is_protobuf_record(old) {
-                continue;
-            }
-            let new = CompactBlockRecord::decode(old)?.encode()?;
-            if new != old {
-                self.mutable_blocks.put(&mut txn, &height, &new)?;
-                txn.commit()?;
-                rewritten += 1;
-            }
-        }
-        Ok(rewritten)
-    }
-
     pub fn read_block(
         &self,
         generation: u64,
@@ -1047,68 +993,6 @@ mod tests {
         drop(txn);
         assert_eq!(index.state().unwrap(), state);
         index.verify_continuity().unwrap();
-    }
-
-    #[test]
-    fn upgrades_legacy_ranges_and_rows_without_changing_the_chain() {
-        use crate::codec::{EncodedBlockRecord, StoredBlock};
-        use bincode::Options;
-
-        let dir = tempfile::tempdir().unwrap();
-        let index = Index::open(dir.path(), 10 * 1024 * 1024, "Mainnet", [1; 32]).unwrap();
-        let state = index.write(batch(&index, 0..=1_005, 1_100)).unwrap();
-        let records = (0..=1_005)
-            .map(|height| index.read_block(state.generation(), height).unwrap())
-            .collect::<Vec<_>>();
-        let legacy = |record: &CompactBlockRecord| {
-            bincode::DefaultOptions::new()
-                .with_fixint_encoding()
-                .with_big_endian()
-                .serialize(&(1u8, record))
-                .unwrap()
-        };
-
-        // The v1 range envelope has a 73-byte summary and 1001 big-endian offsets.
-        let body_start = 73 + 1001 * 4;
-        let mut packed = encode_range(&records[..1000]).unwrap();
-        packed.truncate(body_start);
-        for (index, record) in records[..1000].iter().enumerate() {
-            let offset = (packed.len() - body_start) as u32;
-            packed[73 + index * 4..77 + index * 4].copy_from_slice(&offset.to_be_bytes());
-            let record = legacy(record);
-            packed.extend_from_slice(&(record.len() as u32).to_be_bytes());
-            packed.extend_from_slice(&record);
-        }
-        let end = (packed.len() - body_start) as u32;
-        packed[4073..4077].copy_from_slice(&end.to_be_bytes());
-        let mut txn = index.env.write_txn().unwrap();
-        index.sealed_ranges.put(&mut txn, &0, &packed).unwrap();
-        // Height 1000 is already upgraded, simulating a resumed conversion.
-        for record in &records[1001..] {
-            index
-                .mutable_blocks
-                .put(&mut txn, &record.height, &legacy(record))
-                .unwrap();
-        }
-        txn.commit().unwrap();
-        index.verify_continuity().unwrap();
-        assert_eq!(index.upgrade_records().unwrap(), 6);
-        assert_eq!(index.upgrade_records().unwrap(), 0);
-        assert_eq!(index.state().unwrap(), state);
-        drop(index);
-        let index = Index::open(dir.path(), 10 * 1024 * 1024, "Mainnet", [1; 32]).unwrap();
-        for record in &records {
-            assert_eq!(
-                index.read_block(state.generation(), record.height).unwrap(),
-                *record
-            );
-            let wire: EncodedBlockRecord = index
-                .read_block_by_hash_as(state.generation(), record.hash)
-                .unwrap()
-                .unwrap();
-            assert_eq!(wire.height(), record.height);
-            assert_eq!(wire.block.into_decoded().unwrap(), record.to_proto());
-        }
     }
 
     #[test]

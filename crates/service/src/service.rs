@@ -381,7 +381,8 @@ impl CompactService {
             .ok_or_else(|| Status::not_found("block is not in the indexed canonical chain"))
     }
 
-    pub(crate) async fn block(
+    /// Returns a decoded block, optionally projected to nullifiers.
+    pub async fn block(
         &self,
         request: proto::BlockId,
         nullifiers: bool,
@@ -420,7 +421,8 @@ impl CompactService {
         }
     }
 
-    pub(crate) async fn range(
+    /// Streams decoded blocks with the requested pool/nullifier projection.
+    pub async fn range(
         &self,
         request: proto::BlockRange,
         nullifiers: bool,
@@ -1120,7 +1122,7 @@ mod tests {
     use tonic::Request;
     use zakura_chain::{block, parameters::Network, transaction};
     use zakura_state::Config;
-    use ztreamer_protocol::proto::compact_tx_streamer_server::CompactTxStreamer;
+    use ztreamer_protocol::wire::compact_tx_streamer_server::CompactTxStreamer;
 
     use ztreamer_indexer::{
         codec::CompactBlockRecord,
@@ -1266,7 +1268,7 @@ mod tests {
                     .into_inner();
                 let mut heights = Vec::new();
                 while let Some(block) = stream.next().await {
-                    heights.push(block.unwrap().height);
+                    heights.push(block.unwrap().into_decoded().unwrap().height);
                 }
                 assert_eq!(heights, [1_002, 1_001, 1_000, 999, 998]);
 
@@ -1281,7 +1283,7 @@ mod tests {
                     .into_inner();
                 let mut heights = Vec::new();
                 while let Some(block) = stream.next().await {
-                    heights.push(block.unwrap().height);
+                    heights.push(block.unwrap().into_decoded().unwrap().height);
                 }
                 assert_eq!(heights, [1_004, 1_005, 1_006, 1_007]);
 
@@ -1303,7 +1305,7 @@ mod tests {
                 );
                 let mut heights = Vec::new();
                 while let Some(block) = pinned.next().await {
-                    heights.push(block.unwrap().height);
+                    heights.push(block.unwrap().into_decoded().unwrap().height);
                 }
                 assert_eq!(heights, [1_004, 1_005, 1_006, 1_007]);
                 service
