@@ -51,5 +51,3 @@ Ztreamer supports direct, in-process Zakura mode. It serves 24 of the 27 JSON-RP
 | Total CPU seconds       |             493 |
 
 The benchmark indexed mainnet from genesis (to height 3,459,912) on an M3 Ultra with 512 GiB RAM and a warm cache. These are previously reported figures; the current `--index-only` harness measures historical indexing and exits before gRPC startup.
-
-See [benchmark workloads and reproduction instructions](benchmarks/README.md) for Criterion comparisons, concurrent gRPC load with latency percentiles, storage benchmarks, and historical run artifacts.
