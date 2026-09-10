@@ -141,11 +141,12 @@ async fn main() -> Result<()> {
         .await
     };
 
-    lifecycle::supervise(node, application, shutdown.clone(), async {
-        tokio::signal::ctrl_c()
-            .await
-            .context("Ctrl-C handler failed")
-    })
+    lifecycle::supervise(
+        node,
+        application,
+        shutdown.clone(),
+        lifecycle::shutdown_signal(),
+    )
     .await
 }
 

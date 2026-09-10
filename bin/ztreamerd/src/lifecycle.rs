@@ -2,8 +2,26 @@
 
 use std::future::Future;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use tokio_util::sync::CancellationToken;
+
+pub(crate) async fn shutdown_signal() -> Result<()> {
+    #[cfg(unix)]
+    let terminate = async {
+        use tokio::signal::unix::{SignalKind, signal};
+
+        let mut terminate = signal(SignalKind::terminate()).context("SIGTERM handler failed")?;
+        terminate.recv().await;
+        Ok(())
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<Result<()>>();
+
+    tokio::select! {
+        result = tokio::signal::ctrl_c() => result.context("Ctrl-C handler failed"),
+        result = terminate => result,
+    }
+}
 
 pub(crate) async fn supervise(
     node: impl Future<Output = Result<()>>,

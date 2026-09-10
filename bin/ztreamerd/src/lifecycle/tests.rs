@@ -259,8 +259,8 @@ impl Service for RegistrationProbe {
     fn remove_peer(&self, _peer: &ZakuraPeerId, _conn_id: ZakuraConnId) {}
 }
 
-// A node sets a process-global shutdown flag, so each lifecycle needs its
-// own process even when the suite is run with the standard Cargo harness.
+// Node shutdown flags and OS signal handlers are process-global, so these tests
+// need their own process even when run with the standard Cargo harness.
 fn run_in_subprocess(test: &str) -> bool {
     const CHILD: &str = "ZTREAMER_NODE_TEST_CHILD";
     if std::env::var(CHILD).as_deref() == Ok(test) {
@@ -276,6 +276,58 @@ fn run_in_subprocess(test: &str) -> bool {
         "lifecycle test subprocess failed: {status}"
     );
     true
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn sigterm_drains_node_and_application() {
+    if run_in_subprocess("lifecycle::tests::sigterm_drains_node_and_application") {
+        return;
+    }
+    process_signal_drains_node_and_application("-TERM").await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn sigint_drains_node_and_application() {
+    if run_in_subprocess("lifecycle::tests::sigint_drains_node_and_application") {
+        return;
+    }
+    process_signal_drains_node_and_application("-INT").await;
+}
+
+#[cfg(unix)]
+async fn process_signal_drains_node_and_application(signal: &str) {
+    let shutdown = CancellationToken::new();
+    let node_cleaned = Cell::new(false);
+    let app_cleaned = Cell::new(false);
+    let node = async {
+        // The supervisor must register both handlers before polling node startup.
+        let status = std::process::Command::new("kill")
+            .args([signal, &std::process::id().to_string()])
+            .status()
+            .expect("send signal to lifecycle test subprocess");
+        assert!(status.success(), "kill failed: {status}");
+        shutdown.cancelled().await;
+        tokio::task::yield_now().await;
+        node_cleaned.set(true);
+        Ok(())
+    };
+    let application = async {
+        shutdown.cancelled().await;
+        tokio::task::yield_now().await;
+        app_cleaned.set(true);
+        Ok(())
+    };
+    timeout(
+        Duration::from_secs(5),
+        supervise(node, application, shutdown.clone(), shutdown_signal()),
+    )
+    .await
+    .expect("signal shuts down both lifecycles within timeout")
+    .expect("signal shutdown succeeds");
+    assert!(node_cleaned.get(), "node cleanup was not drained");
+    assert!(app_cleaned.get(), "application cleanup was not drained");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
