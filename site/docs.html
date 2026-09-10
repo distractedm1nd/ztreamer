@@ -26,14 +26,14 @@
 
 <h2>run</h2>
 <p>One process. Zakura boots inside it, syncs to the tip, then the index builds and the servers open.</p>
-<pre><span class="p">$</span> ztreamerd --zakura-config zakura.toml --index-map-size 68719476736</pre>
-<p>The map size is a virtual reservation, not disk. Mainnet needs more than the 16 GiB default.</p>
+<pre><span class="p">$</span> ztreamerd --zakura-config zakura.toml</pre>
+<p>The default LMDB map ceiling is 64 GiB. This reserves virtual address space; disk space is used as index data is written.</p>
 
 <h2>flags</h2>
 <table>
 <tr><td>--zakura-config FILE</td><td>Zakura TOML. Zakura defaults and <code>ZAKURA_*</code> apply when omitted.</td></tr>
 <tr><td>--index-dir DIR</td><td>LMDB index. <s>ztreamer-index</s></td></tr>
-<tr><td>--index-map-size BYTES</td><td>LMDB map ceiling. <s>17179869184</s></td></tr>
+<tr><td>--index-map-size BYTES</td><td>LMDB map ceiling. <s>68719476736</s></td></tr>
 <tr><td>--grpc-listen ADDR</td><td>CompactTxStreamer. <s>127.0.0.1:9067</s></td></tr>
 <tr><td>--tls-cert FILE</td><td>PEM certificate chain for gRPC TLS. Requires <code>--tls-key</code>.</td></tr>
 <tr><td>--tls-key FILE</td><td>PEM private key for gRPC TLS. Requires <code>--tls-cert</code>.</td></tr>
