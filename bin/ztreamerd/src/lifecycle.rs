@@ -3,11 +3,10 @@
 use std::future::Future;
 
 use anyhow::{Context, Result, anyhow};
+use tokio::signal::unix::{SignalKind, signal};
 use tokio_util::sync::CancellationToken;
 
 pub(crate) async fn shutdown_signal() -> Result<()> {
-    use tokio::signal::unix::{SignalKind, signal};
-
     let mut terminate = signal(SignalKind::terminate()).context("SIGTERM handler failed")?;
 
     tokio::select! {
