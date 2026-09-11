@@ -12,7 +12,7 @@ use ztreamer_protocol::proto;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PoolSelection {
-    transparent: bool,
+    pub(crate) transparent: bool,
     sapling: bool,
     orchard: bool,
     ironwood: bool,
@@ -20,18 +20,11 @@ pub(crate) struct PoolSelection {
 
 impl PoolSelection {
     pub(crate) fn is_all(self) -> bool {
-        self.sapling && self.orchard && self.ironwood
+        !self.transparent && self.sapling && self.orchard && self.ironwood
     }
 
-    /// Validates a block request, whose stored data only includes shielded pools.
     pub(crate) fn from_request(pool_types: &[i32]) -> Result<Self, Status> {
-        let selection = Self::from_mempool_request(pool_types)?;
-        if selection.transparent {
-            return Err(Status::invalid_argument(
-                "transparent compact data is not supported",
-            ));
-        }
-        Ok(selection)
+        Self::from_mempool_request(pool_types)
     }
 
     /// Empty means every shielded pool, for compatibility with legacy clients.
@@ -106,6 +99,49 @@ pub(crate) fn project_block(
         });
     }
     block
+}
+
+pub(crate) fn add_transparent_txs(
+    block: &mut proto::CompactBlock,
+    transactions: &[std::sync::Arc<transaction::Transaction>],
+) {
+    for (index, tx) in transactions.iter().enumerate() {
+        let vin: Vec<_> = tx
+            .spent_outpoints()
+            .map(|outpoint| proto::CompactTxIn {
+                prevout_txid: outpoint.hash.0.to_vec(),
+                prevout_index: outpoint.index,
+            })
+            .collect();
+        let vout: Vec<_> = tx
+            .outputs()
+            .iter()
+            .map(|output| proto::TxOut {
+                value: output.value.into(),
+                script_pub_key: output.lock_script.as_raw_bytes().to_vec(),
+            })
+            .collect();
+        if vin.is_empty() && vout.is_empty() {
+            continue;
+        }
+        let index = index as u64;
+        let position = match block.vtx.binary_search_by_key(&index, |tx| tx.index) {
+            Ok(position) => position,
+            Err(position) => {
+                block.vtx.insert(
+                    position,
+                    proto::CompactTx {
+                        index,
+                        txid: tx.hash().0.to_vec(),
+                        ..Default::default()
+                    },
+                );
+                position
+            }
+        };
+        block.vtx[position].vin = vin;
+        block.vtx[position].vout = vout;
+    }
 }
 
 pub(crate) fn compact_mempool_txs(
@@ -349,12 +385,10 @@ mod tests {
             proto::ChainMetadata::default()
         );
 
-        assert_eq!(
-            PoolSelection::from_request(&[proto::PoolType::Transparent as i32])
-                .unwrap_err()
-                .code(),
-            tonic::Code::InvalidArgument
-        );
+        let transparent =
+            PoolSelection::from_request(&[proto::PoolType::Transparent as i32]).unwrap();
+        assert!(transparent.transparent);
+        assert!(!transparent.is_all());
         assert_eq!(
             PoolSelection::from_request(&[99]).unwrap_err().code(),
             tonic::Code::InvalidArgument
@@ -511,6 +545,21 @@ mod tests {
         ] {
             let pools = PoolSelection::from_mempool_request(&types).unwrap();
             let compact = compact_mempool_txs(&entries, pools, &[]).unwrap();
+            let mut block = proto::CompactBlock {
+                vtx: legacy.clone(),
+                ..Default::default()
+            };
+            block.vtx[0].index = 1;
+            let mut block = project_block(block, pools, false);
+            add_transparent_txs(
+                &mut block,
+                &[transparent.clone().into(), orchard.clone().into()],
+            );
+            let mut expected = compact.clone();
+            if expected.len() > 1 {
+                expected[1].index = 1;
+            }
+            assert_eq!(block.vtx, expected);
             assert_eq!(
                 compact[0],
                 proto::CompactTx {

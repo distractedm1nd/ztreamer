@@ -99,7 +99,7 @@ async fn wire_server_preserves_blocks_filters_and_boundaries() {
             );
         }
     }
-    for invalid in [proto::PoolType::Transparent as i32, 99] {
+    for invalid in [0, 99] {
         let mut request = support::range(0, 10);
         request.pool_types = vec![invalid];
         assert_eq!(

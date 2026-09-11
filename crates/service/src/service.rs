@@ -22,7 +22,9 @@ use zakura_chain::{
 use zakura_state::{ReadRequest, ReadResponse, ReadStateService};
 use ztreamer_node::NodeClient;
 
-use crate::serve::{PoolSelection, compact_mempool_txs, excluded_txids, project_block};
+use crate::serve::{
+    PoolSelection, add_transparent_txs, compact_mempool_txs, excluded_txids, project_block,
+};
 use ztreamer_indexer::{
     Digest,
     codec::{CompactBlockRecord, EncodedBlockRecord, ProtobufBlockRecord, StoredBlock},
@@ -428,10 +430,41 @@ impl CompactService {
         nullifiers: bool,
     ) -> Result<RpcStream<proto::CompactBlock>, Status> {
         let pools = PoolSelection::from_request(&request.pool_types)?;
-        self.range_as(request, move |record: ProtobufBlockRecord| {
-            project_block(record.0, pools, nullifiers)
-        })
-        .await
+        let blocks = self
+            .range_as(request, move |record: ProtobufBlockRecord| {
+                project_block(record.0, pools, nullifiers)
+            })
+            .await?;
+        if !pools.transparent {
+            return Ok(blocks);
+        }
+        let source = self.zakura.clone();
+        // Transparent data is deliberately fetched on demand, outside the compact index.
+        // Obviously this is extremely slow. Transparent scanning is not a recommended use case.
+        Ok(Box::pin(blocks.then(move |block| {
+            let source = source.clone();
+            async move {
+                let mut block = block?;
+                let hash = block::Hash(
+                    block
+                        .hash
+                        .as_slice()
+                        .try_into()
+                        .map_err(|_| Status::internal("invalid compact block hash"))?,
+                );
+                let response = source
+                    .oneshot(ReadRequest::Block(hash.into()))
+                    .await
+                    .map_err(source_status)?;
+                let full = match response {
+                    ReadResponse::Block(Some(block)) => block,
+                    ReadResponse::Block(None) => return Err(reorganized(block.height as u32)),
+                    _ => return Err(Status::internal("unexpected block response")),
+                };
+                add_transparent_txs(&mut block, &full.transactions);
+                Ok(block)
+            }
+        })))
     }
 
     async fn range_as<T: StoredBlock + Send + 'static, B: Send + 'static>(
@@ -1265,8 +1298,9 @@ mod tests {
     }
 
     #[test]
-    fn streams_cross_range_descending_and_rejects_transparent_data() {
+    fn streams_cross_range_descending_and_fetches_transparent_data() {
         tokio::runtime::Builder::new_current_thread()
+            .enable_time()
             .build()
             .unwrap()
             .block_on(async {
@@ -1381,10 +1415,14 @@ mod tests {
                     service
                         .get_block_range(Request::new(transparent))
                         .await
-                        .err()
                         .unwrap()
+                        .into_inner()
+                        .next()
+                        .await
+                        .unwrap()
+                        .unwrap_err()
                         .code(),
-                    tonic::Code::InvalidArgument
+                    tonic::Code::Unavailable
                 );
                 assert_eq!(
                     CompactTxStreamer::send_transaction(
