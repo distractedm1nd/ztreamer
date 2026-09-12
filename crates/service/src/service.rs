@@ -1077,7 +1077,7 @@ impl CompactService {
             .collect()
     }
 
-    fn parse_address(&self, address: &str) -> Result<transparent::Address, Status> {
+    pub(crate) fn parse_address(&self, address: &str) -> Result<transparent::Address, Status> {
         let address: transparent::Address = address
             .parse()
             .map_err(|error| Status::invalid_argument(format!("invalid address: {error}")))?;
