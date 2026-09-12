@@ -1009,7 +1009,14 @@ impl CompactService {
         &self,
         addresses: Vec<String>,
     ) -> Result<proto::Balance, Status> {
-        let addresses = self.parse_addresses(addresses)?;
+        self.taddress_balance_parsed(self.parse_addresses(addresses)?)
+            .await
+    }
+
+    pub(crate) async fn taddress_balance_parsed(
+        &self,
+        addresses: HashSet<transparent::Address>,
+    ) -> Result<proto::Balance, Status> {
         let response = self
             .zakura
             .clone()

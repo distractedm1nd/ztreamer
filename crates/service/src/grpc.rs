@@ -167,7 +167,10 @@ impl CompactTxStreamer for CompactService {
                 )));
             }
             seen.insert(parsed);
-            let balance = self.taddress_balance(vec![address]).await?.value_zat;
+            let balance = self
+                .taddress_balance_parsed(HashSet::from([parsed]))
+                .await?
+                .value_zat;
             value_zat = value_zat
                 .checked_add(balance)
                 .ok_or_else(|| Status::out_of_range("transparent balance exceeds i64"))?;
