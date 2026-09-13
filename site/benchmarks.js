@@ -1,0 +1,4 @@
+const input=document.querySelector('#filter'),toggle=document.querySelector('#show-zaino'),rows=[...document.querySelectorAll('#numbers tbody tr')];
+function filter(){const q=input.value.toLowerCase();let n=0;rows.forEach(r=>{r.hidden=(!toggle.checked&&r.hasAttribute('data-zaino'))||!r.textContent.toLowerCase().includes(q);if(!r.hidden)n++});document.querySelector('#count').textContent=` ${n} / ${toggle.checked?81:54} scenarios`}
+function updateComparison(){const show=toggle.checked;document.querySelectorAll('[data-zaino-only]').forEach(e=>e.hidden=!show);document.querySelectorAll('[data-ztreamer-only]').forEach(e=>e.hidden=show);document.querySelector('h1').textContent=show?'Zaino and ztreamer':'ztreamer v0.1.0 vs v0.0.1';filter()}
+input.addEventListener('input',filter);toggle.addEventListener('change',updateComparison);toggle.checked=false;updateComparison();

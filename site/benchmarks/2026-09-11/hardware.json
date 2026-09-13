@@ -1,0 +1,39 @@
+{
+  "collected_at_utc": "2026-09-12T04:55:42.994546+00:00",
+  "collection_note": "Collected after benchmark completion on the same host; not a record of clocks, memory pressure, or other runtime settings during measurement.",
+  "cpu": {
+    "model": "AMD Ryzen 9 9950X3D 16-Core Processor",
+    "sockets": 1,
+    "physical_cores": 16,
+    "logical_cpus": 32,
+    "architecture": "x86_64",
+    "l3_cache": "128 MiB (2 instances)"
+  },
+  "memory": {
+    "os_total_bytes": 64829534208,
+    "configured_swap_bytes": 34507579392
+  },
+  "benchmark_storage": {
+    "model": "WD Blue SN580 1TB",
+    "device": "/dev/nvme1n1",
+    "capacity_bytes": 1000204886016,
+    "transport": "nvme",
+    "rotational": false,
+    "partition": "/dev/nvme1n1p1",
+    "mount_point": "<benchmark-volume>",
+    "filesystem": "ext4"
+  },
+  "os": {
+    "distribution": "Manjaro Linux",
+    "kernel": "6.12.103-1-MANJARO"
+  },
+  "sources": [
+    "lscpu -J",
+    "/proc/meminfo",
+    "findmnt -J -T run-directory",
+    "lsblk -J -b",
+    "/etc/os-release",
+    "uname"
+  ],
+  "execution": "Serving client and nodes ran on this host over loopback; node versions ran sequentially."
+}

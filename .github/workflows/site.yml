@@ -1,0 +1,105 @@
+name: Deploy site
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'site/**'
+      - '.github/workflows/site.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloudflare-site-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      deployments: write
+    steps:
+      - uses: actions/checkout@v6
+      - name: Check static site
+        run: |
+          test -s site/index.html
+          test -s site/docs.html
+          test -s site/benchmarks.html
+          python3 - <<'PY'
+          from html.parser import HTMLParser
+          from pathlib import Path
+          from urllib.parse import unquote, urlsplit
+
+          root = Path('site').resolve()
+          class CheckLinks(HTMLParser):
+              def handle_starttag(self, tag, attrs):
+                  for key, value in attrs:
+                      if key not in ('src', 'href', 'data-export') or not value:
+                          continue
+                      url = urlsplit(value)
+                      if url.scheme or url.netloc or not url.path:
+                          continue
+                      path = (self.base / unquote(url.path)).resolve()
+                      if not path.is_relative_to(root) or not path.exists():
+                          raise SystemExit(f'Missing site asset: {self.page}: {value}')
+          for page in root.glob('*.html'):
+              check = CheckLinks()
+              check.base, check.page = page.parent, page.name
+              check.feed(page.read_text())
+          print('Static site and local asset links checked.')
+          PY
+      - name: Read existing Cloudflare Pages project
+        id: project
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_PAGES_PROJECT: ${{ vars.CLOUDFLARE_PAGES_PROJECT }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re, urllib.error, urllib.request
+
+          for name in ('CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_PAGES_PROJECT'):
+              if not os.environ.get(name):
+                  raise SystemExit(f'Missing {name}; see site/DEPLOY.md.')
+          account = os.environ['CLOUDFLARE_ACCOUNT_ID']
+          project = os.environ['CLOUDFLARE_PAGES_PROJECT']
+          if not re.fullmatch(r'[a-fA-F0-9]{32}', account):
+              raise SystemExit('CLOUDFLARE_ACCOUNT_ID must be the 32-character account ID.')
+          if not re.fullmatch(r'[a-z0-9][a-z0-9-]*', project):
+              raise SystemExit('CLOUDFLARE_PAGES_PROJECT must be the project name, not a URL.')
+          request = urllib.request.Request(
+              f'https://api.cloudflare.com/client/v4/accounts/{account}/pages/projects/{project}',
+              headers={'Authorization': 'Bearer ' + os.environ['CLOUDFLARE_API_TOKEN']},
+          )
+          try:
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  payload = json.load(response)
+          except urllib.error.HTTPError as error:
+              raise SystemExit(f'Cloudflare returned HTTP {error.code}; check the token, account ID and existing Pages project name.')
+          if not payload.get('success'):
+              raise SystemExit('Cloudflare could not read the existing Pages project.')
+          branch = payload['result'].get('production_branch', '')
+          if not re.fullmatch(r'[A-Za-z0-9_./-]+', branch):
+              raise SystemExit('The Pages production branch is missing or has unsupported characters.')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'branch={branch}\n')
+          print(f'Deploying site/ to existing Pages project {project}, production branch {branch}.')
+          PY
+      - name: Deploy static files
+        id: deploy
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          wranglerVersion: '4.81.0'
+          command: pages deploy site --project-name=${{ vars.CLOUDFLARE_PAGES_PROJECT }} --branch=${{ steps.project.outputs.branch }} --commit-hash=${{ github.sha }}
+          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
+      - name: Deployment link
+        env:
+          DEPLOYMENT_URL: ${{ steps.deploy.outputs.deployment-url }}
+        run: printf 'Deployed site/ to %s\n' "$DEPLOYMENT_URL" >> "$GITHUB_STEP_SUMMARY"
