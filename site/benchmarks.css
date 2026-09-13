@@ -1,0 +1,45 @@
+.benchmarks-page [hidden]{display:none!important}
+.benchmarks-page header nav{flex-wrap:wrap}
+.benchmarks-page header [aria-current]{color:var(--gold)}
+.benchmark-report{padding:3rem 0 4rem}
+.benchmark-report h1{font-size:clamp(2.2rem,6vw,4.5rem);line-height:1.1;margin:.8rem 0 1.5rem;letter-spacing:0}
+.benchmark-report h2{font-size:clamp(1.35rem,3vw,1.8rem);margin-bottom:1.25rem;font-weight:500}
+.benchmark-report p{margin:.8rem 0;line-height:1.65}
+.benchmark-report a{text-decoration:underline;text-underline-offset:.2em}
+.benchmark-report a:hover{color:var(--gold)}
+.benchmark-report .eyebrow{font:.7rem/1.6 var(--mono);color:var(--dim);letter-spacing:.07em;text-transform:uppercase}
+.benchmark-report .sub{color:var(--dim);max-width:65rem}
+.benchmark-report .sub strong{color:var(--ink);font-weight:500}
+.benchmark-report .compare-toggle{display:flex;align-items:center;gap:.8rem;width:fit-content;max-width:100%;padding:1rem;border:1px solid var(--rule);cursor:pointer;margin:1.5rem 0;font:.85rem/1.5 var(--mono)}
+.benchmark-report .compare-toggle input{width:1.1rem;height:1.1rem;accent-color:var(--gold);flex-shrink:0}
+.benchmark-report .compare-toggle:focus-within{outline:2px solid var(--gold);outline-offset:3px}
+.benchmark-report .report-nav{display:flex;gap:1.25rem;flex-wrap:wrap;padding:1rem 0;border-bottom:1px solid var(--rule);font:.75rem/1.6 var(--mono)}
+.benchmark-report .cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));margin:2rem 0;border-bottom:1px solid var(--rule)}
+.benchmark-report .card{padding:1.5rem 1.25rem 1.75rem 0;font:.8rem/1.6 var(--mono)}
+.benchmark-report .card+.card{border-left:1px solid var(--rule);padding-left:1.25rem}
+.benchmark-report .card b{display:block;font:500 clamp(1.8rem,3vw,3rem)/1.2 var(--mono);letter-spacing:0;margin:.75rem 0;color:var(--gold)}
+.benchmark-report .card span{color:var(--dim);font-size:.72rem}
+.benchmark-report .note{border-left:2px solid var(--rule);padding:.5rem 1rem;color:var(--dim);font-size:.85rem}
+.benchmark-report section{margin:3rem 0}
+.benchmark-report section img{display:block;width:100%;height:auto;border:1px solid var(--rule);background:#262626}
+.benchmark-report .downloads{font:.75rem/1.7 var(--mono);color:var(--dim)}
+.benchmark-report .table-wrap{overflow:auto;border:1px solid var(--rule)}
+.benchmark-report table{border-collapse:collapse;width:100%;font:.73rem/1.5 var(--mono);white-space:nowrap}
+.benchmark-report td,.benchmark-report th{padding:.75rem;border-bottom:1px solid var(--rule);text-align:right}
+.benchmark-report th{font-weight:500;color:var(--dim)}
+.benchmark-report td:nth-child(-n+3),.benchmark-report th:nth-child(-n+3){text-align:left}
+.benchmark-report tr:hover{background:var(--panel)}
+.benchmark-report #hardware td{white-space:normal}
+.benchmark-report #filter{width:min(100%,24rem);padding:.8rem;margin:0 0 1rem;background:transparent;color:var(--ink);border:1px solid var(--rule);font:.85rem/1.5 var(--mono)}
+.benchmark-report #count{font:.75rem/1.5 var(--mono);color:var(--dim)}
+.benchmark-report details{margin:2rem 0;color:var(--dim);font-size:.85rem}
+.benchmark-report summary{cursor:pointer;font:500 .8rem/1.6 var(--mono);color:var(--ink)}
+@media(max-width:760px){
+ .benchmarks-page header{gap:1rem}
+ .benchmarks-page header nav{gap:.75rem}
+ .benchmark-report{padding-top:2rem}
+ .benchmark-report .cards{grid-template-columns:1fr}
+ .benchmark-report .card+.card{border-left:0;border-top:1px solid var(--rule);padding-left:0}
+ .benchmark-report #hardware table{white-space:normal}
+ .benchmark-report #hardware th{min-width:7rem}
+}
