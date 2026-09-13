@@ -2,3 +2,7 @@
 /benchmark-runs
 /docs
 /result
+
+# Generated Python bytecode
+__pycache__/
+*.py[cod]
