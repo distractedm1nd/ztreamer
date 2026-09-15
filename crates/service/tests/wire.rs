@@ -113,37 +113,60 @@ async fn wire_server_preserves_blocks_filters_and_boundaries() {
 #[tokio::test]
 async fn cancelled_streams_leave_the_server_usable() {
     let server = support::LocalServer::start().await;
-    let client = support::Client::connect(server.endpoint.clone())
-        .await
-        .unwrap();
     let mut tasks = tokio::task::JoinSet::new();
-    for _ in 0..64 {
-        let mut client = client.clone();
+    for worker in 0..64 {
+        let endpoint = server.endpoint.clone();
         tasks.spawn(async move {
-            for _ in 0..8 {
+            // Client clones share a connection with bounded HTTP/2 reset tracking.
+            // Give each worker its own connection for the cancellation workload.
+            let mut client = support::Client::connect(endpoint)
+                .await
+                .unwrap_or_else(|error| panic!("worker {worker} failed to connect: {error}"));
+            for cancellation in 0..8 {
                 let mut stream = client
                     .get_block_range(support::range(0, 1999))
                     .await
-                    .unwrap()
+                    .unwrap_or_else(|error| {
+                        panic!(
+                            "worker {worker}, cancellation {cancellation}: request failed: {error}"
+                        )
+                    })
                     .into_inner();
-                assert_eq!(stream.message().await.unwrap().unwrap().height, 0);
+                let first = stream.message().await.unwrap_or_else(|error| {
+                    panic!("worker {worker}, cancellation {cancellation}: read failed: {error}")
+                });
+                assert_eq!(
+                    first.map(|block| block.height),
+                    Some(0),
+                    "worker {worker}, cancellation {cancellation}"
+                );
                 // Cancel while the server still has buffered range output.
                 drop(stream);
             }
+            let observed = support::consume(
+                &mut client,
+                support::range(0, 15),
+                std::time::Duration::ZERO,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("worker {worker} could not reuse its channel: {error}"));
+            assert_eq!(observed.blocks, 16, "worker {worker}");
         });
     }
     tokio::time::timeout(std::time::Duration::from_secs(30), async {
         while let Some(result) = tasks.join_next().await {
-            result.unwrap();
+            result.expect("cancellation worker must complete");
         }
-        let mut client = client;
+        let mut client = support::Client::connect(server.endpoint.clone())
+            .await
+            .expect("server must accept a fresh connection after cancellations");
         let observed = support::consume(
             &mut client,
             support::range(0, 1999),
             std::time::Duration::ZERO,
         )
         .await
-        .unwrap();
+        .expect("fresh client must read a complete range after cancellations");
         assert_eq!(observed.blocks, 2000);
     })
     .await
