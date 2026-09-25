@@ -1,0 +1,416 @@
+{
+  "hardware": {
+    "collected_at_utc": "2026-09-12T04:55:42.994546+00:00",
+    "collection_note": "Collected after benchmark completion on the same host; not a record of clocks, memory pressure, or other runtime settings during measurement.",
+    "cpu": {
+      "model": "AMD Ryzen 9 9950X3D 16-Core Processor",
+      "sockets": 1,
+      "physical_cores": 16,
+      "logical_cpus": 32,
+      "architecture": "x86_64",
+      "l3_cache": "128 MiB (2 instances)"
+    },
+    "memory": {
+      "os_total_bytes": 64829534208,
+      "configured_swap_bytes": 34507579392
+    },
+    "benchmark_storage": {
+      "model": "WD Blue SN580 1TB",
+      "device": "/dev/nvme1n1",
+      "capacity_bytes": 1000204886016,
+      "transport": "nvme",
+      "rotational": false,
+      "partition": "/dev/nvme1n1p1",
+      "mount_point": "<benchmark-volume>",
+      "filesystem": "ext4"
+    },
+    "os": {
+      "distribution": "Manjaro Linux",
+      "kernel": "6.12.103-1-MANJARO"
+    },
+    "sources": [
+      "lscpu -J",
+      "/proc/meminfo",
+      "findmnt -J -T run-directory",
+      "lsblk -J -b",
+      "/etc/os-release",
+      "uname"
+    ],
+    "execution": "Serving client and nodes ran on this host over loopback; node versions ran sequentially."
+  },
+  "ztreamer": {
+    "selection": "One complete fixed-HEAD rerun; existing first complete release repeat retained. Versions never ran in parallel.",
+    "versions": {
+      "head": {
+        "arguments": [
+          "ztreamer-run/binaries/serving-suite",
+          "--endpoint",
+          "http://127.0.0.1:19067",
+          "--label",
+          "86bf4b0-limit16",
+          "--output",
+          "ztreamer-run/fixed-head-rerun/results-86bf4b0-limit16",
+          "--fixtures",
+          "ztreamer-run/fixtures.json",
+          "--range-requests",
+          "1000",
+          "--range-request-counts",
+          "100000=100",
+          "--repeats",
+          "1",
+          "--warmup",
+          "1",
+          "--start",
+          "419200",
+          "--end",
+          "3478843",
+          "--seed",
+          "20260829"
+        ],
+        "concurrency_model": "one outstanding request per connected client; sustained duration plus in-flight completion",
+        "end_block_hash": "ebd9a466cf20cc878776a1473e87f2477484536cd129e395cfa6680000000000",
+        "end_height": 3478843,
+        "endpoint": "http://127.0.0.1:19067",
+        "fixtures": {
+          "addresses": {
+            "busy": "t1Jg2S2sJwDd223cHphY9cwTbznjeeLWaan",
+            "quiet": "t1RwL3DvEjZHcNYJE6XXE76MH9wNonk6bpx"
+          },
+          "txids": [
+            "4cc852b50a27de5b297732199d4f02b5c7f5aa0e6337554f2fd2ea4e7c90029f",
+            "28f0dfa4310e52bbd1a129457e9714805ffc43f03d9a1c0183f63e6136e78f4b"
+          ]
+        },
+        "height_generator": "splitmix64-v1",
+        "label": "86bf4b0-limit16",
+        "latency_cases": [
+          "GetLightdInfo",
+          "GetLatestBlock",
+          "GetBlock",
+          "GetTreeState",
+          "GetLatestTreeState",
+          "GetSubtreeRoots/sapling",
+          "GetSubtreeRoots/orchard",
+          "GetMempoolTx",
+          "GetTaddressTxids/busy",
+          "GetTaddressTransactions/busy",
+          "GetTaddressBalance/busy",
+          "GetAddressUtxos/busy",
+          "GetTaddressTxids/quiet",
+          "GetTaddressTransactions/quiet",
+          "GetTaddressBalance/quiet",
+          "GetAddressUtxos/quiet",
+          "GetTransaction/0",
+          "GetTransaction/1"
+        ],
+        "latency_model": "connected channel; configured warmups; complete response including protobuf decode; no cache reset",
+        "observed_tip": 3478843,
+        "observed_tip_hash": "ebd9a466cf20cc878776a1473e87f2477484536cd129e395cfa6680000000000",
+        "omitted_fixture_cases": {
+          "addresses": false,
+          "transactions": false
+        },
+        "percentiles": "nearest-rank, successful requests only; empty streams have no first-message latency",
+        "schema_version": 1,
+        "seed": 20260829,
+        "server": {
+          "backend_build": "v1.3.1+gf4d44dd5cce2",
+          "chain": "main",
+          "git_commit": "",
+          "version": "0.0.1"
+        },
+        "start_height": 419200,
+        "started_unix": 1789152343,
+        "sync_model": "sequential compact-block download; fixed bounds; no trial decryption; no cache reset",
+        "throughput": "successful protobuf payload only, excluding transport framing; null if scenario failed"
+      },
+      "release": {
+        "arguments": [
+          "ztreamer-run/binaries/serving-suite",
+          "--endpoint",
+          "http://127.0.0.1:19067",
+          "--label",
+          "v0.0.1",
+          "--output",
+          "ztreamer-run/results-release",
+          "--start",
+          "419200",
+          "--end",
+          "3478843",
+          "--fixtures",
+          "ztreamer-run/fixtures.json",
+          "--range-requests",
+          "1000",
+          "--range-request-counts",
+          "100000=100",
+          "--repeats",
+          "3"
+        ],
+        "concurrency_model": "one outstanding request per connected client; sustained duration plus in-flight completion",
+        "end_block_hash": "ebd9a466cf20cc878776a1473e87f2477484536cd129e395cfa6680000000000",
+        "end_height": 3478843,
+        "endpoint": "http://127.0.0.1:19067",
+        "fixtures": {
+          "addresses": {
+            "busy": "t1Jg2S2sJwDd223cHphY9cwTbznjeeLWaan",
+            "quiet": "t1RwL3DvEjZHcNYJE6XXE76MH9wNonk6bpx"
+          },
+          "txids": [
+            "4cc852b50a27de5b297732199d4f02b5c7f5aa0e6337554f2fd2ea4e7c90029f",
+            "28f0dfa4310e52bbd1a129457e9714805ffc43f03d9a1c0183f63e6136e78f4b"
+          ]
+        },
+        "height_generator": "splitmix64-v1",
+        "label": "v0.0.1",
+        "latency_cases": [
+          "GetLightdInfo",
+          "GetLatestBlock",
+          "GetBlock",
+          "GetTreeState",
+          "GetLatestTreeState",
+          "GetSubtreeRoots/sapling",
+          "GetSubtreeRoots/orchard",
+          "GetMempoolTx",
+          "GetTaddressTxids/busy",
+          "GetTaddressTransactions/busy",
+          "GetTaddressBalance/busy",
+          "GetAddressUtxos/busy",
+          "GetTaddressTxids/quiet",
+          "GetTaddressTransactions/quiet",
+          "GetTaddressBalance/quiet",
+          "GetAddressUtxos/quiet",
+          "GetTransaction/0",
+          "GetTransaction/1"
+        ],
+        "latency_model": "connected channel; configured warmups; complete response including protobuf decode; no cache reset",
+        "observed_tip": 3478843,
+        "observed_tip_hash": "ebd9a466cf20cc878776a1473e87f2477484536cd129e395cfa6680000000000",
+        "omitted_fixture_cases": {
+          "addresses": false,
+          "transactions": false
+        },
+        "percentiles": "nearest-rank, successful requests only; empty streams have no first-message latency",
+        "schema_version": 1,
+        "seed": 20260829,
+        "server": {
+          "backend_build": "v1.3.0+g0359ffc214f1",
+          "chain": "main",
+          "git_commit": "",
+          "version": "0.0.1"
+        },
+        "start_height": 419200,
+        "started_unix": 1789147984,
+        "sync_model": "sequential compact-block download; fixed bounds; no trial decryption; no cache reset",
+        "throughput": "successful protobuf payload only, excluding transport framing; null if scenario failed"
+      }
+    },
+    "head_fix": "86bf4b0 plus uncommitted 16-active-range-stream limit; patch and binary hash in ../fixed-head-rerun/"
+  },
+  "zaino": {
+    "arguments": [
+      "zaino-run/bin/serving-suite",
+      "--endpoint",
+      "http://127.0.0.1:8137",
+      "--label",
+      "zaino-d27ec930",
+      "--output",
+      "zaino-run/benchmark",
+      "--start",
+      "419200",
+      "--end",
+      "3478843",
+      "--fixtures",
+      "ztreamer-run/fixtures.json",
+      "--range-requests",
+      "1000",
+      "--range-request-counts",
+      "100000=100",
+      "--repeats",
+      "1",
+      "--seed",
+      "20260829"
+    ],
+    "concurrency_model": "one outstanding request per connected client; sustained duration plus in-flight completion",
+    "end_block_hash": "ebd9a466cf20cc878776a1473e87f2477484536cd129e395cfa6680000000000",
+    "end_height": 3478843,
+    "endpoint": "http://127.0.0.1:8137",
+    "fixtures": {
+      "addresses": {
+        "busy": "t1Jg2S2sJwDd223cHphY9cwTbznjeeLWaan",
+        "quiet": "t1RwL3DvEjZHcNYJE6XXE76MH9wNonk6bpx"
+      },
+      "txids": [
+        "4cc852b50a27de5b297732199d4f02b5c7f5aa0e6337554f2fd2ea4e7c90029f",
+        "28f0dfa4310e52bbd1a129457e9714805ffc43f03d9a1c0183f63e6136e78f4b"
+      ]
+    },
+    "height_generator": "splitmix64-v1",
+    "label": "zaino-d27ec930",
+    "latency_cases": [
+      "GetLightdInfo",
+      "GetLatestBlock",
+      "GetBlock",
+      "GetTreeState",
+      "GetLatestTreeState",
+      "GetSubtreeRoots/sapling",
+      "GetSubtreeRoots/orchard",
+      "GetMempoolTx",
+      "GetTaddressTxids/busy",
+      "GetTaddressTransactions/busy",
+      "GetTaddressBalance/busy",
+      "GetAddressUtxos/busy",
+      "GetTaddressTxids/quiet",
+      "GetTaddressTransactions/quiet",
+      "GetTaddressBalance/quiet",
+      "GetAddressUtxos/quiet",
+      "GetTransaction/0",
+      "GetTransaction/1"
+    ],
+    "latency_model": "connected channel; configured warmups; complete response including protobuf decode; no cache reset",
+    "observed_tip": 3479843,
+    "observed_tip_hash": "214b4420ef7555809cdbc9102cd07c8b205d204c230b00c4b0e42d0000000000",
+    "omitted_fixture_cases": {
+      "addresses": false,
+      "transactions": false
+    },
+    "percentiles": "nearest-rank, successful requests only; empty streams have no first-message latency",
+    "schema_version": 1,
+    "seed": 20260829,
+    "server": {
+      "backend_build": "v6.3.0",
+      "chain": "main",
+      "git_commit": "d27ec9303858d0216367f5469e37364a4f34ee2c",
+      "version": "0.9.0"
+    },
+    "start_height": 419200,
+    "started_unix": 1789168545,
+    "sync_model": "sequential compact-block download; fixed bounds; no trial decryption; no cache reset",
+    "throughput": "successful protobuf payload only, excluding transport framing; null if scenario failed"
+  },
+  "zaino_sync": {
+    "utc": "2026-09-11T23:15:44.980780+00:00",
+    "elapsed_s": 13379.58821524796,
+    "first_height_elapsed_s": 32.00286285800394,
+    "last_sample": {
+      "utc": "2026-09-11T23:15:44.979716+00:00",
+      "elapsed_s": 13379.58821524796,
+      "free_disk_bytes": 130838499328,
+      "height": 3474991,
+      "db_tip_height": 3478842,
+      "target_height": 3478842,
+      "chain_tip_height": 3479843,
+      "accumulator_built_height": 3478842,
+      "accumulator_rebuild_active": 0,
+      "has_reached_tip_raw": 1,
+      "transactions": 18238579,
+      "t_since_first_height": 13347.585352389957,
+      "rss_bytes": 45777047552,
+      "swap_bytes": 0,
+      "cpu_seconds": 24505.88,
+      "read_bytes": 427769794560,
+      "write_bytes": 246927757312
+    },
+    "readiness": "Committed DB at finalised floor (validator tip minus 1001) and reported target; accumulator at DB tip, rebuild inactive, persistent mode; stable 30s"
+  },
+  "ztreamer_historical_indexing": {
+    "runs": [
+      {
+        "label": "v0.0.1",
+        "commit": "ec1bce059c74eae416979a8a623b521d0be44f82",
+        "binary_sha256": "9a657327e771a435025144fece065c605d2d4c7e5352d2200c96ab0181834bbb",
+        "command": [
+          "ztreamer/benchmark-runs/head-v0.0.1-20260911T164022Z/binaries/ztreamerd-release",
+          "--zakura-config",
+          "historical-run/v0.0.1/zakura.toml",
+          "--index-dir",
+          "historical-run/v0.0.1/index",
+          "--index-map-size",
+          "68719476736",
+          "--fetch-workers",
+          "8",
+          "--source-segment-blocks",
+          "256",
+          "--max-pending-bytes",
+          "268435456",
+          "--max-batch-bytes",
+          "16777216",
+          "--grpc-listen",
+          "127.0.0.1:19067",
+          "--metrics-listen",
+          "127.0.0.1:19999"
+        ],
+        "started_utc": "2026-09-13T10:30:09.218259+00:00",
+        "cache": "OS page cache not reset; sequential v0.0.1 then v0.1.0",
+        "sample_interval_s": 1,
+        "snapshot": "preserved-zakura-benchmark-snapshot",
+        "index_initial_state": "absent",
+        "resource_scope": "ztreamerd process including embedded Zakura",
+        "historical_start_s": 54.19825291633606,
+        "historical_complete_s": 179.6006019115448,
+        "historical_duration_s": 125.402342832,
+        "ready_s": 180.00133769703098,
+        "final_height": 3478843,
+        "exit_status": 0,
+        "finished_utc": "2026-09-13T10:33:14.300046+00:00",
+        "index_allocated_bytes": 17257586688,
+        "peak_rss_bytes": 2188967936,
+        "cpu_seconds": 389.85,
+        "read_bytes": 412869877760,
+        "write_bytes": 25612554240,
+        "readiness_detection": "First successful local gRPC TCP connection after historical-complete log; one-second polling",
+        "source_snapshot_tip_height": 3478843
+      },
+      {
+        "label": "v0.1.0",
+        "commit": "c40f3c31d8fb3f850c3fa90d9490b4df50aa88c4",
+        "binary_sha256": "2c54d82ffdebccdadcb7442c2fd5d6aacbc82b9862c94797f398cb66b4d81ae1",
+        "command": [
+          "ztreamer/target/release/ztreamerd",
+          "--zakura-config",
+          "historical-run/v0.1.0/zakura.toml",
+          "--index-dir",
+          "historical-run/v0.1.0/index",
+          "--index-map-size",
+          "68719476736",
+          "--fetch-workers",
+          "8",
+          "--source-segment-blocks",
+          "256",
+          "--max-pending-bytes",
+          "268435456",
+          "--max-batch-bytes",
+          "16777216",
+          "--grpc-listen",
+          "127.0.0.1:19067",
+          "--metrics-listen",
+          "127.0.0.1:19999"
+        ],
+        "started_utc": "2026-09-13T10:33:40.782570+00:00",
+        "cache": "OS page cache not reset; sequential v0.0.1 then v0.1.0",
+        "sample_interval_s": 1,
+        "snapshot": "preserved-zakura-benchmark-snapshot",
+        "index_initial_state": "absent",
+        "resource_scope": "ztreamerd process including embedded Zakura",
+        "historical_start_s": 47.160428285598755,
+        "historical_complete_s": 166.47379231452942,
+        "historical_duration_s": 119.313359306,
+        "ready_s": 167.00132008094806,
+        "final_height": 3478843,
+        "exit_status": 0,
+        "finished_utc": "2026-09-13T10:36:31.663053+00:00",
+        "index_allocated_bytes": 18493411328,
+        "peak_rss_bytes": 2264330240,
+        "cpu_seconds": 373.85,
+        "read_bytes": 388346617856,
+        "write_bytes": 28006146048,
+        "readiness_detection": "First successful local gRPC TCP connection after historical-complete log; one-second polling",
+        "source_snapshot_tip_height": 3478843
+      }
+    ],
+    "order": [
+      "v0.0.1",
+      "v0.1.0"
+    ],
+    "notes": "One clean index per version, sequential. OS page cache not reset. Resources include embedded Zakura. Serving measurements remain from September 11; these indexing measurements use the actual release tags."
+  }
+}

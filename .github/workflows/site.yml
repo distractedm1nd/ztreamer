@@ -1,0 +1,65 @@
+name: Deploy site
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'site/**'
+      - '.github/workflows/site.yml'
+      - 'wrangler.jsonc'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloudflare-site-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - name: Check static site
+        run: |
+          test -s site/index.html
+          test -s site/docs.html
+          test -s site/benchmarks.html
+          python3 - <<'PY'
+          from html.parser import HTMLParser
+          from pathlib import Path
+          from urllib.parse import unquote, urlsplit
+
+          root = Path('site').resolve()
+          class CheckLinks(HTMLParser):
+              def handle_starttag(self, tag, attrs):
+                  for key, value in attrs:
+                      if key not in ('src', 'href', 'data-export') or not value:
+                          continue
+                      url = urlsplit(value)
+                      if url.scheme or url.netloc or not url.path:
+                          continue
+                      path = (self.base / unquote(url.path)).resolve()
+                      if not path.is_relative_to(root) or not path.exists():
+                          raise SystemExit(f'Missing site asset: {self.page}: {value}')
+          for page in root.glob('*.html'):
+              check = CheckLinks()
+              check.base, check.page = page.parent, page.name
+              check.feed(page.read_text())
+          print('Static site and local asset links checked.')
+          PY
+      - name: Deploy static files
+        id: deploy
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          wranglerVersion: '4.81.0'
+          command: deploy --config wrangler.jsonc
+      - name: Deployment link
+        run: echo 'Deployed site/ to https://ztreamer.sh' >> "$GITHUB_STEP_SUMMARY"
