@@ -10,7 +10,7 @@ use tokio_stream::StreamExt as _;
 use tonic::Status;
 use zakura_network::zakura::{
     CustomService, Frame, FramedSend, LOCAL_MAX_CONTROL_FRAME_BYTES, Peer, Service, Stream,
-    StreamMode, ZakuraConnId, ZakuraPeerId, ZakuraServiceId,
+    ZakuraConnId, ZakuraPeerId, ZakuraServiceId,
 };
 use ztreamer_protocol::p2p::MessageDecoder;
 pub use ztreamer_protocol::p2p::{
@@ -27,7 +27,7 @@ const STREAMS: [Stream; 1] = [Stream {
     version: STREAM_VERSION,
     frame_cap: LOCAL_MAX_CONTROL_FRAME_BYTES,
     capability: CAPABILITY,
-    mode: StreamMode::Ordered,
+    ..Stream::PERSISTENT
 }];
 
 #[derive(Clone)]
