@@ -9,3 +9,5 @@ pub use service::{
     CompactService, HeadFollowerConfig, HeadFollowerError, Readiness, ServingSnapshot,
     SnapshotError,
 };
+
+mod telemetry;

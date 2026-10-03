@@ -1,6 +1,6 @@
 /target
 /benchmark-runs
-/docs
+/docs/*
 /result
 
 # Generated Python bytecode

@@ -11,6 +11,9 @@ use std::{
 };
 use tracing::info;
 
+mod telemetry;
+use telemetry::{PipelineMetrics, SegmentMetrics};
+
 use zakura_chain::{
     block::{self, Height},
     serialization::{CompactSizeMessage, ZcashSerialize},
@@ -26,8 +29,8 @@ use crate::{
 const MIB: usize = 1024 * 1024;
 pub(crate) const MAX_SOURCE_BLOCKS: u32 = 4096;
 
-#[derive(Default)]
-struct WorkerStats {
+#[derive(Clone, Default)]
+pub(crate) struct WorkerStats {
     read: Duration,
     header_read: Duration,
     transaction_read: Duration,
@@ -37,6 +40,7 @@ struct WorkerStats {
     ranges: u64,
     blocks: u64,
     bytes: u64,
+    transactions: u64,
 }
 
 impl WorkerStats {
@@ -50,6 +54,7 @@ impl WorkerStats {
         self.ranges += other.ranges;
         self.blocks += other.blocks;
         self.bytes += other.bytes;
+        self.transactions += other.transactions;
     }
 }
 
@@ -116,200 +121,35 @@ pub enum PipelineError {
     Panic,
 }
 
-/// Fetch-and-parse workers feed one [`OrderedBuilder`], which feeds one LMDB writer.
-pub(crate) struct HistoricalPipeline<'a> {
-    index: &'a Index,
-    db: &'a ZakuraDb,
-    config: PipelineConfig,
+/// A segment-oriented source seam: production keeps its native range iterators.
+/// Implementations must send every height in the inclusive range, or return an error.
+pub(crate) trait HistoricalSource: Sync {
+    fn tip(&self) -> Option<(Height, block::Hash)>;
+    fn block_hash(&self, height: u32) -> Option<block::Hash>;
+    fn prune_height(&self) -> u32;
+    fn process_segment(
+        &self,
+        start: u32,
+        end: u32,
+        expected_end_hash: Option<block::Hash>,
+        max_source_bytes: usize,
+        parsed_tx: &SyncSender<ParsedCompactBlock>,
+        stats: &mut WorkerStats,
+    ) -> Result<(), PipelineError>;
 }
 
-impl<'a> HistoricalPipeline<'a> {
-    pub(crate) fn new(
-        index: &'a Index,
-        db: &'a ZakuraDb,
-        config: PipelineConfig,
-    ) -> Result<Self, PipelineError> {
-        let pipeline = Self { index, db, config };
-        pipeline.validate_config()?;
-        Ok(pipeline)
+impl HistoricalSource for ZakuraDb {
+    fn tip(&self) -> Option<(Height, block::Hash)> {
+        ZakuraDb::tip(self)
     }
 
-    /// Ingests the finalized durable blocks available when this call starts.
-    pub(crate) fn sync(&self) -> Result<IndexState, PipelineError> {
-        // read local resume point
-        let initial_state = self.index.state()?;
-        let durable_tip = initial_state.durable_tip();
-        let start = durable_tip.map_or(Ok(0), |tip| {
-            tip.height.checked_add(1).ok_or(IngestError::Overflow)
-        })?;
-
-        let (tip_height, tip_hash) = self.db.tip().ok_or(PipelineError::NoSourceTip)?;
-        // The live-head reconciler validates durable records newer than Zakura's finalized tip.
-        if durable_tip.is_some_and(|tip| tip.height > tip_height.0) {
-            return Ok(initial_state);
-        }
-        if let Some(durable_tip) = durable_tip
-            && self
-                .db
-                .block_header(Height(durable_tip.height).into())
-                .is_none_or(|header| header.hash().0 != durable_tip.hash)
-        {
-            return Err(PipelineError::DurableTipMismatch {
-                height: durable_tip.height,
-            });
-        }
-        if start < self.db.prune_height().unwrap_or(Height::MIN).0 {
-            return Err(PipelineError::MissingBody { height: start });
-        }
-        let target = tip_height.0;
-        if start > target {
-            return Ok(initial_state);
-        }
-
-        thread::scope(|scope| {
-            let next = Arc::new(AtomicU64::new(u64::from(start)));
-
-            // `workers` send ParsedCompactBlocks over parsed_tx, `coordinator` below recieves parsed_rx and writes to batch_tx
-            // `writer` reads batch_rx and populates index
-            let (parsed_tx, parsed_rx) = sync_channel::<ParsedCompactBlock>(0);
-            let (batch_tx, batch_rx) = sync_channel::<WriteBatch>(1);
-
-            // single threaded writer receives WriteBatches and writes to Index
-            let writer = scope.spawn(move || self.write_batches(initial_state, batch_rx));
-
-            // concurrent parser workers
-            let workers: Vec<_> = (0..self.config.workers)
-                .map(|_| {
-                    let parsed_tx = parsed_tx.clone();
-                    let next = Arc::clone(&next);
-                    // all workers add the segment size atomically to `next` to split work
-                    //
-                    // todo(@distractedm1nd): all ranges are not equal. optimize by having more workers in sandblasting range?
-                    scope.spawn(move || self.process_segments(next, target, tip_hash, parsed_tx))
-                })
-                .collect();
-            drop(parsed_tx);
-
-            // single threaded ordered builder job gives batches to `writer` job
-            let (coordinator_receive_wait, batch_send_wait) =
-                self.build_batches(initial_state, target, parsed_rx, batch_tx)?;
-
-            let mut worker_stats = WorkerStats::default();
-            for worker in workers {
-                worker_stats.add(worker.join().map_err(|_| PipelineError::Panic)??);
-            }
-            let (state, write_stats) = writer.join().map_err(|_| PipelineError::Panic)??;
-            info!(
-                start_height = start,
-                target_height = target,
-                target_hash = %tip_hash,
-                fetch_read_seconds = worker_stats.read.as_secs_f64(),
-                fetch_header_read_seconds = worker_stats.header_read.as_secs_f64(),
-                fetch_transaction_read_seconds = worker_stats.transaction_read.as_secs_f64(),
-                fetch_txid_read_seconds = worker_stats.txid_read.as_secs_f64(),
-                parse_seconds = worker_stats.parse.as_secs_f64(),
-                worker_send_wait_seconds = worker_stats.send_wait.as_secs_f64(),
-                processed_ranges = worker_stats.ranges,
-                processed_blocks = worker_stats.blocks,
-                processed_bytes = worker_stats.bytes,
-                coordinator_receive_wait_seconds = coordinator_receive_wait.as_secs_f64(),
-                batch_send_wait_seconds = batch_send_wait.as_secs_f64(),
-                write_seconds = write_stats.write.as_secs_f64(),
-                write_batches = write_stats.batches,
-                written_blocks = write_stats.blocks,
-                "historical pipeline stage totals"
-            );
-            Ok(state)
-        })
+    fn block_hash(&self, height: u32) -> Option<block::Hash> {
+        self.block_header(Height(height).into())
+            .map(|header| header.hash())
     }
 
-    // receives WriteBatches from OrderedBuilder to write them to Index
-    fn write_batches(
-        &self,
-        initial_state: IndexState,
-        batch_rx: Receiver<WriteBatch>,
-    ) -> Result<(IndexState, WriteStats), PipelineError> {
-        let mut result = Ok(initial_state);
-        let mut stats = WriteStats::default();
-        while let Ok(batch) = batch_rx.recv() {
-            if let Ok(state) = &mut result {
-                stats.batches += 1;
-                stats.blocks += batch.records.len() as u64;
-                let started = Instant::now();
-                match self.index.write(batch) {
-                    Ok(next) => *state = next,
-                    Err(error) => result = Err(error.into()),
-                }
-                stats.write += started.elapsed();
-            }
-        }
-        result.map(|state| (state, stats))
-    }
-
-    /// main parser worker job
-    fn process_segments(
-        &self,
-        next: Arc<AtomicU64>,
-        target: u32,
-        tip_hash: block::Hash,
-        parsed_tx: SyncSender<ParsedCompactBlock>,
-    ) -> Result<WorkerStats, PipelineError> {
-        let mut stats = WorkerStats::default();
-        loop {
-            let segment_start = next.fetch_add(
-                u64::from(self.config.source_segment_blocks),
-                Ordering::Relaxed,
-            );
-            if segment_start > u64::from(target) {
-                return Ok(stats);
-            }
-            let segment_end = segment_start
-                .saturating_add(u64::from(self.config.source_segment_blocks - 1))
-                .min(u64::from(target)) as u32;
-            stats.add(self.process_segment(
-                segment_start as u32,
-                segment_end,
-                (segment_end == target).then_some(tip_hash),
-                &parsed_tx,
-            )?);
-        }
-    }
-
-    // job handling the OrderedBuilder
-    fn build_batches(
-        &self,
-        initial_state: IndexState,
-        target: u32,
-        parsed_rx: Receiver<ParsedCompactBlock>,
-        batch_tx: SyncSender<WriteBatch>,
-    ) -> Result<(Duration, Duration), PipelineError> {
-        let mut builder = OrderedBuilder::new(initial_state, self.config.max_pending_bytes)?;
-        let mut receive_wait = Duration::ZERO;
-        let mut send_wait = Duration::ZERO;
-        loop {
-            let started = Instant::now();
-            let Ok(block) = parsed_rx.recv() else {
-                break;
-            };
-            receive_wait += started.elapsed();
-            builder.push(block)?;
-            if builder.ready_bytes() >= self.config.max_batch_bytes
-                && let Some(batch) =
-                    builder.build_batch(Some(target), Some(target), self.config.max_batch_bytes)?
-            {
-                let started = Instant::now();
-                batch_tx.send(batch).map_err(|_| PipelineError::Worker)?;
-                send_wait += started.elapsed();
-            }
-        }
-        while let Some(batch) =
-            builder.build_batch(Some(target), Some(target), self.config.max_batch_bytes)?
-        {
-            let started = Instant::now();
-            batch_tx.send(batch).map_err(|_| PipelineError::Worker)?;
-            send_wait += started.elapsed();
-        }
-        Ok((receive_wait, send_wait))
+    fn prune_height(&self) -> u32 {
+        ZakuraDb::prune_height(self).unwrap_or(Height::MIN).0
     }
 
     fn process_segment(
@@ -317,31 +157,29 @@ impl<'a> HistoricalPipeline<'a> {
         start: u32,
         end: u32,
         expected_end_hash: Option<block::Hash>,
+        max_source_bytes: usize,
         parsed_tx: &SyncSender<ParsedCompactBlock>,
-    ) -> Result<WorkerStats, PipelineError> {
-        let mut stats = WorkerStats::default();
-        let mut headers = self
-            .db
-            .block_headers_by_height_range(Height(start)..=Height(end));
+        stats: &mut WorkerStats,
+    ) -> Result<(), PipelineError> {
+        let mut headers = self.block_headers_by_height_range(Height(start)..=Height(end));
         let transaction_range = TransactionLocation::min_for_height(Height(start))
             ..=TransactionLocation::max_for_height(Height(end));
         let mut transactions = self
-            .db
             .raw_transactions_by_location_range(transaction_range.clone())
             .peekable();
         let mut transaction_hashes = self
-            .db
             .transaction_hashes_by_location_range(transaction_range)
             .peekable();
 
         for raw_height in start..=end {
             let height = Height(raw_height);
             let started = Instant::now();
-            let (actual_height, header) = headers.next().ok_or(PipelineError::SourceGap {
+            let header = headers.next();
+            stats.header_read += started.elapsed();
+            let (actual_height, header) = header.ok_or(PipelineError::SourceGap {
                 expected: raw_height,
                 actual: None,
             })?;
-            stats.header_read += started.elapsed();
             if actual_height != height {
                 return Err(PipelineError::SourceGap {
                     expected: raw_height,
@@ -361,10 +199,11 @@ impl<'a> HistoricalPipeline<'a> {
                 block_transactions.push(transaction);
 
                 let started = Instant::now();
-                let Some((location, txid)) = transaction_hashes.next() else {
+                let txid = transaction_hashes.next();
+                stats.txid_read += started.elapsed();
+                let Some((location, txid)) = txid else {
                     return Err(PipelineError::SourceChanged);
                 };
-                stats.txid_read += started.elapsed();
                 if location != transaction_location {
                     return Err(PipelineError::SourceChanged);
                 }
@@ -407,16 +246,17 @@ impl<'a> HistoricalPipeline<'a> {
                         .ok_or(PipelineError::SourceSize { height: raw_height })?,
                 )
                 .ok_or(PipelineError::SourceSize { height: raw_height })?;
-            if block_bytes > self.config.max_source_bytes {
+            if block_bytes > max_source_bytes {
                 return Err(PipelineError::BlockExceedsByteLimit {
                     height: raw_height,
                     required: block_bytes,
-                    limit: self.config.max_source_bytes,
+                    limit: max_source_bytes,
                 });
             }
             stats.read = stats.header_read + stats.transaction_read + stats.txid_read;
             stats.ranges = 1;
             stats.blocks += 1;
+            stats.transactions += block_transactions.len() as u64;
             stats.bytes += size as u64;
 
             let started = Instant::now();
@@ -429,17 +269,255 @@ impl<'a> HistoricalPipeline<'a> {
                     .iter()
                     .zip(txids)
                     .map(|(transaction, txid)| (transaction.raw_bytes().as_slice(), txid)),
-            )?;
+            );
             stats.parse += started.elapsed();
+            let parsed = parsed?;
 
             let started = Instant::now();
-            if parsed_tx.send(parsed).is_err() {
-                return Ok(stats);
-            }
+            let sent = parsed_tx.send(parsed);
             stats.send_wait += started.elapsed();
+            sent.map_err(|_| PipelineError::Worker)?;
         }
 
-        Ok(stats)
+        Ok(())
+    }
+}
+
+/// Fetch-and-parse workers feed one [`OrderedBuilder`], which feeds one LMDB writer.
+pub(crate) struct HistoricalPipeline<'a, S = ZakuraDb> {
+    index: &'a Index,
+    db: &'a S,
+    config: PipelineConfig,
+    metrics: PipelineMetrics,
+}
+
+impl<'a, S: HistoricalSource> HistoricalPipeline<'a, S> {
+    pub(crate) fn new(
+        index: &'a Index,
+        db: &'a S,
+        config: PipelineConfig,
+    ) -> Result<Self, PipelineError> {
+        let pipeline = Self {
+            index,
+            db,
+            config,
+            metrics: PipelineMetrics::new(),
+        };
+        pipeline.validate_config()?;
+        Ok(pipeline)
+    }
+
+    /// Ingests the finalized durable blocks available when this call starts.
+    pub(crate) fn sync(&self) -> Result<IndexState, PipelineError> {
+        let mut pass = self.metrics.pass();
+        let result = self.sync_inner();
+        pass.finish(result.is_ok());
+        result
+    }
+
+    fn sync_inner(&self) -> Result<IndexState, PipelineError> {
+        // read local resume point
+        let initial_state = self.index.state()?;
+        let durable_tip = initial_state.durable_tip();
+        let start = durable_tip.map_or(Ok(0), |tip| {
+            tip.height.checked_add(1).ok_or(IngestError::Overflow)
+        })?;
+
+        let (tip_height, tip_hash) = self.db.tip().ok_or(PipelineError::NoSourceTip)?;
+        // The live-head reconciler validates durable records newer than Zakura's finalized tip.
+        if durable_tip.is_some_and(|tip| tip.height > tip_height.0) {
+            return Ok(initial_state);
+        }
+        if let Some(durable_tip) = durable_tip
+            && self
+                .db
+                .block_hash(durable_tip.height)
+                .is_none_or(|hash| hash.0 != durable_tip.hash)
+        {
+            return Err(PipelineError::DurableTipMismatch {
+                height: durable_tip.height,
+            });
+        }
+        if start < self.db.prune_height() {
+            return Err(PipelineError::MissingBody { height: start });
+        }
+        let target = tip_height.0;
+        self.metrics.target.set(f64::from(target));
+        if start > target {
+            return Ok(initial_state);
+        }
+
+        thread::scope(|scope| {
+            let next = Arc::new(AtomicU64::new(u64::from(start)));
+
+            // `workers` send ParsedCompactBlocks over parsed_tx, `coordinator` below recieves parsed_rx and writes to batch_tx
+            // `writer` reads batch_rx and populates index
+            let (parsed_tx, parsed_rx) = sync_channel::<ParsedCompactBlock>(0);
+            let (batch_tx, batch_rx) = sync_channel::<WriteBatch>(1);
+
+            // single threaded writer receives WriteBatches and writes to Index
+            let writer = scope.spawn(move || self.write_batches(initial_state, batch_rx));
+
+            // concurrent parser workers
+            let workers: Vec<_> = (0..self.config.workers)
+                .map(|_| {
+                    let parsed_tx = parsed_tx.clone();
+                    let next = Arc::clone(&next);
+                    // all workers add the segment size atomically to `next` to split work
+                    //
+                    // todo(@distractedm1nd): all ranges are not equal. optimize by having more workers in sandblasting range?
+                    scope.spawn(move || self.process_segments(next, target, tip_hash, parsed_tx))
+                })
+                .collect();
+            drop(parsed_tx);
+
+            // single threaded ordered builder job gives batches to `writer` job
+            let (coordinator_receive_wait, batch_send_wait) =
+                self.build_batches(initial_state, target, parsed_rx, batch_tx)?;
+
+            let mut worker_stats = WorkerStats::default();
+            for worker in workers {
+                worker_stats.add(worker.join().map_err(|_| PipelineError::Panic)??);
+            }
+            let (state, write_stats) = writer.join().map_err(|_| PipelineError::Panic)??;
+            if state.durable_tip().is_none_or(|tip| tip.height != target) {
+                return Err(PipelineError::SourceGap {
+                    expected: state.durable_tip().map_or(start, |tip| tip.height + 1),
+                    actual: None,
+                });
+            }
+            info!(
+                start_height = start,
+                target_height = target,
+                target_hash = %tip_hash,
+                fetch_read_seconds = worker_stats.read.as_secs_f64(),
+                fetch_header_read_seconds = worker_stats.header_read.as_secs_f64(),
+                fetch_transaction_read_seconds = worker_stats.transaction_read.as_secs_f64(),
+                fetch_txid_read_seconds = worker_stats.txid_read.as_secs_f64(),
+                parse_seconds = worker_stats.parse.as_secs_f64(),
+                worker_send_wait_seconds = worker_stats.send_wait.as_secs_f64(),
+                processed_ranges = worker_stats.ranges,
+                processed_blocks = worker_stats.blocks,
+                processed_bytes = worker_stats.bytes,
+                coordinator_receive_wait_seconds = coordinator_receive_wait.as_secs_f64(),
+                batch_send_wait_seconds = batch_send_wait.as_secs_f64(),
+                write_seconds = write_stats.write.as_secs_f64(),
+                write_batches = write_stats.batches,
+                written_blocks = write_stats.blocks,
+                "historical pipeline stage totals"
+            );
+            Ok(state)
+        })
+    }
+
+    // receives WriteBatches from OrderedBuilder to write them to Index
+    fn write_batches(
+        &self,
+        initial_state: IndexState,
+        batch_rx: Receiver<WriteBatch>,
+    ) -> Result<(IndexState, WriteStats), PipelineError> {
+        let mut result = Ok(initial_state);
+        let mut stats = WriteStats::default();
+        while let Ok(batch) = batch_rx.recv() {
+            if let Ok(state) = &mut result {
+                stats.batches += 1;
+                stats.blocks += batch.records.len() as u64;
+                let started = Instant::now();
+                let blocks = batch.records.len() as u64;
+                let written = self.index.write(batch);
+                let elapsed = started.elapsed();
+                self.metrics.commit(elapsed, written.is_ok(), blocks);
+                match written {
+                    Ok(next) => *state = next,
+                    Err(error) => result = Err(error.into()),
+                }
+                stats.write += elapsed;
+            }
+        }
+        result.map(|state| (state, stats))
+    }
+
+    /// main parser worker job
+    fn process_segments(
+        &self,
+        next: Arc<AtomicU64>,
+        target: u32,
+        tip_hash: block::Hash,
+        parsed_tx: SyncSender<ParsedCompactBlock>,
+    ) -> Result<WorkerStats, PipelineError> {
+        let _active = self.metrics.worker();
+        let mut stats = WorkerStats::default();
+        loop {
+            let segment_start = next.fetch_add(
+                u64::from(self.config.source_segment_blocks),
+                Ordering::Relaxed,
+            );
+            if segment_start > u64::from(target) {
+                return Ok(stats);
+            }
+            let segment_end = segment_start
+                .saturating_add(u64::from(self.config.source_segment_blocks - 1))
+                .min(u64::from(target)) as u32;
+            let mut segment = SegmentMetrics::new(&self.metrics);
+            self.db.process_segment(
+                segment_start as u32,
+                segment_end,
+                (segment_end == target).then_some(tip_hash),
+                self.config.max_source_bytes,
+                &parsed_tx,
+                &mut segment.stats,
+            )?;
+            segment.success = true;
+            stats.add(segment.stats.clone());
+        }
+    }
+
+    // job handling the OrderedBuilder
+    fn build_batches(
+        &self,
+        initial_state: IndexState,
+        target: u32,
+        parsed_rx: Receiver<ParsedCompactBlock>,
+        batch_tx: SyncSender<WriteBatch>,
+    ) -> Result<(Duration, Duration), PipelineError> {
+        let mut builder = OrderedBuilder::new(initial_state, self.config.max_pending_bytes)?;
+        let mut receive_wait = Duration::ZERO;
+        let mut send_wait = Duration::ZERO;
+        loop {
+            let started = Instant::now();
+            let Ok(block) = parsed_rx.recv() else {
+                break;
+            };
+            let elapsed = started.elapsed();
+            receive_wait += elapsed;
+            self.metrics.receive_wait.record(elapsed.as_secs_f64());
+            builder.push(block)?;
+            self.metrics.buffer(&builder);
+            if builder.ready_bytes() >= self.config.max_batch_bytes
+                && let Some(batch) =
+                    builder.build_batch(Some(target), Some(target), self.config.max_batch_bytes)?
+            {
+                let started = Instant::now();
+                let sent = batch_tx.send(batch);
+                let elapsed = started.elapsed();
+                self.metrics.batch_wait.record(elapsed.as_secs_f64());
+                send_wait += elapsed;
+                self.metrics.buffer(&builder);
+                sent.map_err(|_| PipelineError::Worker)?;
+            }
+        }
+        while let Some(batch) =
+            builder.build_batch(Some(target), Some(target), self.config.max_batch_bytes)?
+        {
+            let started = Instant::now();
+            let sent = batch_tx.send(batch);
+            let elapsed = started.elapsed();
+            self.metrics.batch_wait.record(elapsed.as_secs_f64());
+            send_wait += elapsed;
+            self.metrics.buffer(&builder);
+            sent.map_err(|_| PipelineError::Worker)?;
+        }
+        Ok((receive_wait, send_wait))
     }
 
     fn validate_config(&self) -> Result<(), PipelineError> {
@@ -528,3 +606,6 @@ mod tests {
         hash
     }
 }
+
+#[cfg(test)]
+mod integration_tests;

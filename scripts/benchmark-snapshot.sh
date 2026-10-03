@@ -215,8 +215,10 @@ while kill -0 "$pid" 2>/dev/null; do
     now=$(unix_now)
     curl -fsS --max-time 2 "http://$metrics/metrics" 2>/dev/null |
         awk -v now="$now" '
-            /^(ztreamer_index_|state_finalized_block_height|sync_estimated_)/ && $1 !~ /^#/ {
-                print now "," $1 "," $2
+            /^(ztreamer_|state_finalized_block_height|sync_estimated_)/ && $1 !~ /^#/ {
+                metric = $1
+                gsub(/"/, "\"\"", metric)
+                print now ",\"" metric "\"," $2
             }
         ' >> "$run/metrics.csv" || true
     sleep 1

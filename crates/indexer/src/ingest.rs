@@ -119,6 +119,16 @@ impl OrderedBuilder {
         Ok(())
     }
 
+    /// Encoded-size estimate, including the contiguous ready prefix.
+    pub(crate) fn pending_bytes(&self) -> usize {
+        self.pending_bytes
+    }
+
+    /// First height not yet in the contiguous prefix; may equal target + 1.
+    pub(crate) fn first_missing_height(&self) -> u64 {
+        self.ready_end
+    }
+
     pub(crate) fn ready_bytes(&self) -> usize {
         self.ready_bytes
     }
