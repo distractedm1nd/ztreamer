@@ -33,6 +33,8 @@ Certificate changes require a restart. The Prometheus listener is not covered by
 
 All `lightwallet-protocol` methods are implemented. We intentionally deviate `lightwallet-protocol` for `GetBlock`, to exclude transparent data which current wallets do not use. `GetBlockRange` will accept transparent filters, but this will not hit the index as transparent scanning is not a recommended use case.
 
+`GetTaddressBalanceStream` counts each address once and accepts up to 10,000 distinct addresses per request. An additional distinct address returns `ResourceExhausted`; repeated addresses do not count toward the limit.
+
 Ztreamer supports direct, in-process Zakura mode. It serves 24 of the 27 JSON-RPC requests provided by Zaino direct mode.
 
 `getblockdeltas`, `getspentinfo`, and `gettxoutsetinfo` are not yet implemented.

@@ -1,5 +1,7 @@
 //! gRPC adapter for [`crate::CompactService`].
 
+use std::collections::HashSet;
+
 use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status};
 use ztreamer_protocol::{
@@ -7,6 +9,9 @@ use ztreamer_protocol::{
 };
 
 use crate::{CompactService, service::RpcStream};
+
+// Bound the per-request deduplication set.
+const MAX_BALANCE_STREAM_ADDRESSES: usize = 10_000;
 
 #[tonic::async_trait]
 impl CompactTxStreamer for CompactService {
@@ -148,10 +153,22 @@ impl CompactTxStreamer for CompactService {
         request: Request<tonic::Streaming<proto::Address>>,
     ) -> Result<Response<proto::Balance>, Status> {
         let mut request = request.into_inner();
+        let mut seen = HashSet::new();
         let mut value_zat = 0i64;
         while let Some(address) = request.next().await {
+            let address = address?.address;
+            let parsed = self.parse_address(&address)?;
+            if seen.contains(&parsed) {
+                continue;
+            }
+            if seen.len() >= MAX_BALANCE_STREAM_ADDRESSES {
+                return Err(Status::resource_exhausted(format!(
+                    "too many distinct addresses (limit {MAX_BALANCE_STREAM_ADDRESSES})"
+                )));
+            }
+            seen.insert(parsed);
             let balance = self
-                .taddress_balance(vec![address?.address])
+                .taddress_balance_parsed(HashSet::from([parsed]))
                 .await?
                 .value_zat;
             value_zat = value_zat
