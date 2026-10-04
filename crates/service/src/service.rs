@@ -22,6 +22,8 @@ use zakura_chain::{
 use zakura_state::{ReadRequest, ReadResponse, ReadStateService};
 use ztreamer_node::NodeClient;
 
+use crate::telemetry::{ObservedSource, ServiceMetrics};
+
 use crate::serve::{
     PoolSelection, add_transparent_txs, compact_mempool_txs, excluded_txids, project_block,
 };
@@ -152,6 +154,7 @@ pub struct CompactService {
     node: Option<NodeClient>,
     range_streams: Arc<Semaphore>,
     ping_enabled: bool,
+    metrics: Arc<ServiceMetrics>,
 }
 
 impl CompactService {
@@ -163,6 +166,8 @@ impl CompactService {
     ) -> Self {
         let chain_name = chain_name.into();
         let (snapshot, _) = watch::channel(state.into());
+        let metrics = Arc::new(ServiceMetrics::new());
+        metrics.snapshot(&snapshot.borrow());
         Self {
             index,
             snapshot,
@@ -171,6 +176,7 @@ impl CompactService {
             node: None,
             range_streams: Arc::new(Semaphore::new(MAX_RANGE_STREAMS)),
             ping_enabled: false,
+            metrics,
         }
     }
 
@@ -199,8 +205,9 @@ impl CompactService {
         state: IndexState,
         volatile_head: Vec<CompactBlockRecord>,
     ) -> Result<(), SnapshotError> {
-        self.snapshot
-            .send_replace(ServingSnapshot::with_head(state, volatile_head)?);
+        let snapshot = ServingSnapshot::with_head(state, volatile_head)?;
+        self.metrics.snapshot(&snapshot);
+        self.snapshot.send_replace(snapshot);
         Ok(())
     }
 
@@ -209,6 +216,7 @@ impl CompactService {
         let mut snapshot = self.snapshot();
         snapshot.ready = false;
         snapshot.tip_fresh = false;
+        self.metrics.snapshot(&snapshot);
         self.snapshot.send_replace(snapshot);
     }
 
@@ -228,10 +236,17 @@ impl CompactService {
         source: &mut impl CanonicalBlockSource,
         config: PipelineConfig,
     ) -> Result<IndexState, HeadSyncError> {
+        let started = Instant::now();
         let snapshot = self.snapshot();
+        let mut observed = ObservedSource {
+            source,
+            previous: snapshot.visible_tip,
+            observed: None,
+            metrics: &self.metrics,
+        };
         let result = ztreamer_indexer::head::sync_head_once(
             &self.index,
-            source,
+            &mut observed,
             &snapshot.volatile_head,
             config,
         )
@@ -239,9 +254,18 @@ impl CompactService {
         if matches!(result, Err(HeadSyncError::DeepReorg { .. })) {
             self.begin_recovery();
         }
-        let (state, head) = result?;
+        let (state, head) = result.inspect_err(|_| {
+            self.metrics
+                .head_error
+                .record(started.elapsed().as_secs_f64());
+        })?;
         self.publish_head(state, head)
             .expect("head reconciliation must produce a connected snapshot");
+        self.metrics
+            .published(observed.observed, self.snapshot().visible_tip);
+        self.metrics
+            .head_success
+            .record(started.elapsed().as_secs_f64());
         Ok(state)
     }
 
@@ -327,6 +351,7 @@ impl CompactService {
             .last_source_success
             .is_some_and(|last| last.elapsed() < freshness_timeout);
         snapshot.source_error = Some(error.into());
+        self.metrics.snapshot(&snapshot);
         self.snapshot.send_replace(snapshot);
     }
 
@@ -413,13 +438,22 @@ impl CompactService {
         request: proto::BlockRange,
         nullifiers: bool,
     ) -> Result<RpcStream<EncodedCompactBlock>, Status> {
+        let guard = self.metrics.range();
+        guard.response(self.encoded_range_inner(request, nullifiers).await)
+    }
+
+    async fn encoded_range_inner(
+        &self,
+        request: proto::BlockRange,
+        nullifiers: bool,
+    ) -> Result<RpcStream<EncodedCompactBlock>, Status> {
         let pools = PoolSelection::from_request(&request.pool_types)?;
         if !nullifiers && pools.is_all() {
             self.range_as(request, |record: EncodedBlockRecord| record.block)
                 .await
         } else {
             Ok(Box::pin(
-                self.range(request, nullifiers)
+                self.range_inner(request, nullifiers)
                     .await?
                     .map(|block| block.map(Into::into)),
             ))
@@ -428,6 +462,15 @@ impl CompactService {
 
     /// Streams decoded blocks with the requested pool/nullifier projection.
     pub async fn range(
+        &self,
+        request: proto::BlockRange,
+        nullifiers: bool,
+    ) -> Result<RpcStream<proto::CompactBlock>, Status> {
+        let guard = self.metrics.range();
+        guard.response(self.range_inner(request, nullifiers).await)
+    }
+
+    async fn range_inner(
         &self,
         request: proto::BlockRange,
         nullifiers: bool,
@@ -494,10 +537,12 @@ impl CompactService {
         {
             return Err(Status::unavailable("canonical head source is stale"));
         }
-        let permit = Arc::clone(&self.range_streams)
-            .acquire_owned()
-            .await
-            .map_err(|_| Status::unavailable("range stream pool is closed"))?;
+        let admission_started = Instant::now();
+        let permit = Arc::clone(&self.range_streams).acquire_owned().await;
+        self.metrics
+            .admission
+            .record(admission_started.elapsed().as_secs_f64());
+        let permit = permit.map_err(|_| Status::unavailable("range stream pool is closed"))?;
         let index = Arc::clone(&self.index);
         let ascending = start <= end;
         let durable_tip = snapshot.durable_tip.map(|tip| tip.height);
