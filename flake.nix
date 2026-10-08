@@ -13,7 +13,7 @@
         "aarch64-darwin"
       ];
       eachSystem = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
-      zakuraHash = "sha256-YUKKRFCNgPAF5fXywKlZfSd0ZMHzruW0HxHbELiem+0=";
+      zakuraHash = "sha256-ucq4wyMq8onrF4XgafECngcejaFLa1MZiQKdTXGLCPM=";
     in
     {
       packages = eachSystem (pkgs: {
@@ -24,7 +24,7 @@
           cargoLock = {
             lockFile = ./Cargo.lock;
             outputHashes = pkgs.lib.genAttrs [
-              "zakura-1.5.1"
+              "zakura-1.6.0"
               "zakura-chain-9.0.0"
               "zakura-consensus-10.0.0"
               "zakura-header-chain-4.0.0"
