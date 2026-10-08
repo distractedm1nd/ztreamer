@@ -674,28 +674,61 @@ mod tests {
 
     #[test]
     fn v6_keeps_orchard_and_ironwood_separate() {
+        use crate::codec::{CompactBlockRecord, EncodedBlockRecord, StoredBlock, TreeSizes};
+
         let block = Block::zcash_deserialize(BLOCK_TESTNET_1842421_BYTES.as_slice()).unwrap();
         let shielded = block
             .transactions
             .iter()
             .find_map(|transaction| transaction.orchard_shielded_data().cloned())
             .unwrap();
-        let transaction = Transaction::V6 {
-            network_upgrade: NetworkUpgrade::Nu6_3,
-            lock_time: LockTime::unlocked(),
-            expiry_height: Height(1),
-            inputs: Vec::new(),
-            outputs: Vec::new(),
-            sapling_shielded_data: None,
-            orchard_shielded_data: Some(shielded.clone()),
-            ironwood_shielded_data: Some(shielded),
-        };
-        let bytes = transaction.zcash_serialize_to_vec().unwrap();
-        let parsed = Transaction::zcash_deserialize(bytes.as_slice()).unwrap();
-        assert_eq!(
-            parse_transaction(&bytes, parsed.hash(), 0).unwrap(),
-            reference(&parsed, 0)
-        );
+        // Distinct commitments expose accidental swaps between the two pools.
+        // These are serialization fixtures, not consensus-valid transactions.
+        let mut ironwood = shielded.clone();
+        for action in ironwood.actions.iter_mut() {
+            action.action.cm_x = 1u64.into();
+        }
+        for network_upgrade in [NetworkUpgrade::Nu6_3, NetworkUpgrade::Nu7] {
+            for (has_orchard, has_ironwood) in [(true, true), (true, false), (false, true)] {
+                let transaction = Transaction::V6 {
+                    network_upgrade,
+                    lock_time: LockTime::unlocked(),
+                    expiry_height: Height(4_465_027),
+                    inputs: Vec::new(),
+                    outputs: Vec::new(),
+                    sapling_shielded_data: None,
+                    orchard_shielded_data: has_orchard.then(|| shielded.clone()),
+                    ironwood_shielded_data: has_ironwood.then(|| ironwood.clone()),
+                };
+                let bytes = transaction.zcash_serialize_to_vec().unwrap();
+                let parsed = Transaction::zcash_deserialize(bytes.as_slice()).unwrap();
+                let compact = parse_transaction(&bytes, parsed.hash(), 0).unwrap();
+                assert_eq!(compact, reference(&parsed, 0));
+
+                let record = CompactBlockRecord {
+                    height: 4_465_026,
+                    hash: [1; 32],
+                    previous_hash: [2; 32],
+                    time: 1,
+                    end_tree_sizes: TreeSizes {
+                        sapling: 0,
+                        orchard: compact.orchard_actions.len().try_into().unwrap(),
+                        ironwood: compact.ironwood_actions.len().try_into().unwrap(),
+                    },
+                    transactions: vec![compact],
+                };
+                let encoded = record.encode().unwrap();
+                assert_eq!(CompactBlockRecord::decode(&encoded).unwrap(), record);
+                let wire = EncodedBlockRecord::decode(&encoded)
+                    .unwrap()
+                    .block
+                    .into_decoded()
+                    .unwrap();
+                assert_eq!(wire, record.to_proto());
+                assert_eq!(!wire.vtx[0].actions.is_empty(), has_orchard);
+                assert_eq!(!wire.vtx[0].ironwood_actions.is_empty(), has_ironwood);
+            }
+        }
     }
 
     #[test]

@@ -1541,6 +1541,46 @@ mod tests {
             });
     }
 
+    #[tokio::test]
+    async fn lightd_info_tracks_testnet_nu7_activation() {
+        let directory = tempfile::tempdir().unwrap();
+        let network = Network::new_default_testnet();
+        let index = Arc::new(
+            Index::open(
+                directory.path(),
+                10 * 1024 * 1024,
+                &network.to_string(),
+                network.genesis_hash().0,
+            )
+            .unwrap(),
+        );
+        let (_state, read_state, _tip, _change) =
+            zakura_state::init(Config::ephemeral(), &network, block::Height::MAX, 0)
+                .await
+                .unwrap();
+        let service = CompactService::new(index, IndexState::default(), "test", read_state);
+
+        for (height, branch, upgrade, upgrade_height) in [
+            (4_465_025, "37a5165b", "Nu7", 4_465_026),
+            (4_465_026, "77190ad9", "", 0),
+            (4_465_027, "77190ad9", "", 0),
+        ] {
+            service.snapshot.send_modify(|snapshot| {
+                snapshot.visible_tip = Some(BlockId::new(height, [0; 32]));
+            });
+            let info = service
+                .get_lightd_info(Request::new(proto::Empty {}))
+                .await
+                .unwrap()
+                .into_inner();
+            assert_eq!(info.chain_name, "test");
+            assert_eq!(info.block_height, u64::from(height));
+            assert_eq!(info.consensus_branch_id, branch, "height {height}");
+            assert_eq!(info.upgrade_name, upgrade, "height {height}");
+            assert_eq!(info.upgrade_height, upgrade_height, "height {height}");
+        }
+    }
+
     #[test]
     fn subtree_stream_resolves_volatile_completion_blocks() {
         tokio::runtime::Builder::new_current_thread()
