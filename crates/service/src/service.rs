@@ -1541,6 +1541,141 @@ mod tests {
             });
     }
 
+    #[tokio::test]
+    async fn transparent_queries_require_indexed_state() {
+        use zakura_state::{CheckpointVerifiedBlock, StorageMode};
+        use zakura_test::vectors::CONTINUOUS_MAINNET_BLOCKS;
+
+        let network = Network::Mainnet;
+        let block = block::Block::zcash_deserialize(CONTINUOUS_MAINNET_BLOCKS[&1]).unwrap();
+        let transaction = &block.transactions[0];
+        // Block 1's founders' reward is an indexed P2SH output; its miner uses P2PK.
+        let output = &transaction.outputs()[1];
+        let address = output.address(&network).unwrap().to_string();
+        for (storage_mode, checkpoint_sync, indexed) in [
+            (StorageMode::Archive, true, true),
+            (StorageMode::Pruned(Default::default()), true, false),
+            (StorageMode::Pruned(Default::default()), false, true),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let index = Arc::new(
+                Index::open(
+                    directory.path(),
+                    10 * 1024 * 1024,
+                    &network.to_string(),
+                    network.genesis_hash().0,
+                )
+                .unwrap(),
+            );
+            let config = Config {
+                storage_mode,
+                checkpoint_sync,
+                ..Config::ephemeral()
+            };
+            // Keep these fixture blocks within the checkpoint retention window.
+            // Height::MAX would discard block 1's body in pruned storage.
+            let (mut state, read_state, _tip, _change) =
+                zakura_state::init(config, &network, block::Height(1), 0)
+                    .await
+                    .unwrap();
+            for (_, bytes) in CONTINUOUS_MAINNET_BLOCKS.range(..=1) {
+                let block = Arc::new(block::Block::zcash_deserialize(*bytes).unwrap());
+                (&mut state)
+                    .oneshot(zakura_state::Request::CommitCheckpointVerifiedBlock(
+                        CheckpointVerifiedBlock::from(block),
+                    ))
+                    .await
+                    .unwrap();
+            }
+            let service = CompactService::new(index, IndexState::default(), "main", read_state);
+            let balance = service
+                .get_taddress_balance(Request::new(proto::AddressList {
+                    addresses: vec![address.clone()],
+                }))
+                .await;
+            let utxos = service
+                .get_address_utxos(Request::new(proto::GetAddressUtxosArg {
+                    addresses: vec![address.clone()],
+                    ..Default::default()
+                }))
+                .await;
+            let history = service
+                .get_taddress_transactions(Request::new(proto::TransparentAddressBlockFilter {
+                    address: address.clone(),
+                    range: Some(proto::BlockRange::default()),
+                }))
+                .await;
+
+            if indexed {
+                assert_eq!(
+                    balance.unwrap().into_inner().value_zat,
+                    i64::try_from(u64::from(output.value)).unwrap()
+                );
+                let utxos = utxos.unwrap().into_inner().address_utxos;
+                assert_eq!(utxos.len(), 1);
+                assert_eq!(utxos[0].txid, transaction.hash().0);
+                let mut history = history.unwrap().into_inner();
+                let received = history.next().await.unwrap().unwrap();
+                assert_eq!(received.height, 1);
+                assert_eq!(received.data, transaction.zcash_serialize_to_vec().unwrap());
+                assert!(history.next().await.is_none());
+            } else {
+                for error in [
+                    balance.err().unwrap(),
+                    utxos.err().unwrap(),
+                    history.err().unwrap(),
+                ] {
+                    assert_eq!(error.code(), tonic::Code::Unavailable);
+                    assert!(
+                        error
+                            .message()
+                            .contains("transparent address and spender indexes")
+                    );
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn lightd_info_tracks_testnet_nu7_activation() {
+        let directory = tempfile::tempdir().unwrap();
+        let network = Network::new_default_testnet();
+        let index = Arc::new(
+            Index::open(
+                directory.path(),
+                10 * 1024 * 1024,
+                &network.to_string(),
+                network.genesis_hash().0,
+            )
+            .unwrap(),
+        );
+        let (_state, read_state, _tip, _change) =
+            zakura_state::init(Config::ephemeral(), &network, block::Height::MAX, 0)
+                .await
+                .unwrap();
+        let service = CompactService::new(index, IndexState::default(), "test", read_state);
+
+        for (height, branch, upgrade, upgrade_height) in [
+            (4_465_025, "37a5165b", "Nu7", 4_465_026),
+            (4_465_026, "77190ad9", "", 0),
+            (4_465_027, "77190ad9", "", 0),
+        ] {
+            service.snapshot.send_modify(|snapshot| {
+                snapshot.visible_tip = Some(BlockId::new(height, [0; 32]));
+            });
+            let info = service
+                .get_lightd_info(Request::new(proto::Empty {}))
+                .await
+                .unwrap()
+                .into_inner();
+            assert_eq!(info.chain_name, "test");
+            assert_eq!(info.block_height, u64::from(height));
+            assert_eq!(info.consensus_branch_id, branch, "height {height}");
+            assert_eq!(info.upgrade_name, upgrade, "height {height}");
+            assert_eq!(info.upgrade_height, upgrade_height, "height {height}");
+        }
+    }
+
     #[test]
     fn subtree_stream_resolves_volatile_completion_blocks() {
         tokio::runtime::Builder::new_current_thread()
